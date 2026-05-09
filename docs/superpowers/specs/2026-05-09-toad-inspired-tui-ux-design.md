@@ -54,7 +54,7 @@ Out of scope:
 - Multi-agent concurrent execution.
 - Beautiful diff rendering.
 - Full settings system beyond small TUI state needed for the four scoped areas.
-- Layer 1 runtime, Layer 2 worker, or Layer 3 orchestration rewrites.
+- Layer 1 runtime, Layer 2 worker, orLayer 3 orchestration rewrites.
 
 ## Architecture Rules
 
