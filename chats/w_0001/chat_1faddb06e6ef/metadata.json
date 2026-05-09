@@ -1,0 +1,14 @@
+{
+  "chat_id": "chat_1faddb06e6ef",
+  "workspace_id": "w_0001",
+  "title": null,
+  "created_at": "2026-05-05T14:35:04.947202Z",
+  "updated_at": "2026-05-05T14:35:04.949232Z",
+  "last_active_mode": "interaction",
+  "last_run_id": null,
+  "message_count": 1,
+  "token_estimate": 1,
+  "last_compacted_at": null,
+  "compaction_count": 0,
+  "messages": []
+}

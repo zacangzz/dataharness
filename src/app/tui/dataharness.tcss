@@ -1,0 +1,136 @@
+Screen {
+    layout: vertical;
+}
+
+.surface {
+    border: solid $primary;
+    padding: 0 1;
+}
+
+#workspace_bar {
+    height: 1;
+    border: none;
+    padding: 0;
+}
+
+#main {
+    height: 1fr;
+}
+
+#chat_column {
+    width: 1fr;
+}
+
+#conversation {
+    height: 1fr;
+    min-height: 4;
+    overflow-y: auto;
+    border: none;
+    padding: 0 1;
+}
+
+#sidebar {
+    width: 34;
+    min-width: 28;
+    overflow-y: auto;
+    border-left: solid $primary;
+    padding: 0 1;
+}
+
+#user_input {
+    height: 3;
+}
+
+#prompt_bar {
+    height: auto;
+}
+
+#prompt_status {
+    height: 1;
+}
+
+#prompt_hints {
+    min-height: 1;
+    max-height: 8;
+    overflow-y: auto;
+}
+
+#prompt_hint_options {
+    max-height: 8;
+    overflow-y: auto;
+}
+
+.status-running {
+    color: $warning;
+}
+
+.status-success {
+    color: $success;
+}
+
+.status-warning {
+    color: $warning;
+}
+
+.status-error {
+    color: $error;
+}
+
+.status-disabled {
+    color: $text-disabled;
+}
+
+CommandPalette {
+    layer: overlay;
+}
+
+HelpScreen {
+    align: center middle;
+}
+
+HelpScreen #focused_help {
+    width: 72;
+    max-width: 90%;
+    max-height: 80%;
+    background: $surface;
+    border: solid $primary;
+    padding: 1 2;
+}
+
+HelpScreen #focused_help_body {
+    height: auto;
+}
+
+JumpOverlay {
+    background: transparent;
+}
+
+.textual-jump-label {
+    background: $accent;
+    color: $text;
+    padding: 0 1;
+    text-style: bold;
+    width: auto;
+    height: 1;
+}
+
+#textual-jump-info {
+    dock: bottom;
+    height: 1;
+    background: $surface;
+    color: $text;
+    padding: 0 1;
+}
+
+#textual-jump-dismiss {
+    dock: bottom;
+    height: 1;
+    background: $surface;
+    color: $text-muted;
+    padding: 0 1;
+}
+
+Footer {
+    dock: bottom;
+    height: 1;
+}
