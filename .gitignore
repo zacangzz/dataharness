@@ -7,7 +7,7 @@
 /dist/app
 /dist/chats
 /dist/workspaces
-/dist
+/dist/*
 .claude
 .pi
 .pi/

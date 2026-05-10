@@ -3,6 +3,7 @@ from textual.widgets import Input
 
 from app.tui.app import DataHarnessApp
 from app.tui.jump import Jumper
+from app.tui.prompt_editor import PromptEditor
 from app.tui.widgets import ConversationPane, SidebarPane, WorkspaceBar
 
 
@@ -44,7 +45,7 @@ async def test_jump_overlay_focuses_prompt_input_for_one(tmp_path):
         await pilot.press("1")
         await pilot.pause()
 
-        assert isinstance(app.focused, Input)
+        assert isinstance(app.focused, PromptEditor)
         assert app.focused.id == "user_input"
 
 

@@ -177,6 +177,22 @@ Workspace manager reuse:
 - `WorkspaceManagerScreen` should use the same file listing/picker model for its right-side file panel.
 - The workspace manager remains a workspace selector, but its file panel should become navigable and useful rather than static text.
 
+### 2.5 File Ingest Picker
+
+> A separate screen lets the user copy files from anywhere on the host filesystem into the active workspace's `data/` directory. It reuses the FilePicker widget's keyboard model (fuzzy + tree, `tab` toggles, `enter` selects, `escape` dismisses) but is rooted at a host-filesystem path rather than the workspace path.
+>
+> Required behavior:
+> - Opens via `f3`, slash command `/upload`, command palette entry `Upload files`, and a button in the workspace manager.
+> - Initial root: user's home directory; user can change root with `ctrl+r`.
+> - Selection is multi-select (`space` toggles, `enter` confirms).
+> - On confirm, files are copied through `AppSession.ingest_files(workspace_id, paths)` (Layer 3 owns copy + source registration per async spec §9 Workspace UI).
+> - Excludes hidden + symlink-loops by default; size cap per file (configurable, default 200 MB) with explicit prompt for larger files.
+> - Selected files are shown as a staged list before commit; `escape` from staged list returns to the picker.
+> - On success: emit `WorkspaceIngestResult` summary; refresh sidebar Files section + Workspace manager file panel.
+> - On rejection: show inline reason per spec error-handling rules.
+>
+> Architecture: this screen is Layer 4 only; copy/registration goes through `AppSession.ingest_files` so Layer 3 remains source of truth. The picker widget is reused via a generic `FilePicker(root, mode_default, allow_multiselect)` constructor.
+
 ### 3. Conversation Rendering
 
 Replace plain `RichLog` transcript rendering with structured conversation blocks.
@@ -308,6 +324,7 @@ Add or update focused tests for:
 - Chat resume rehydrates structured conversation blocks.
 - Sidebar sections update from status, command, doctor, failure, workspace, and chat events.
 - Workspace manager uses the reusable file list/picker model.
+- File ingest screen calls `AppSession.ingest_files`; multiselect via `space`; root change via `ctrl+r`.
 - TCSS packaging includes any new styles.
 
 Run at minimum:
@@ -320,7 +337,8 @@ For visual regressions, use Textual pilot tests and screenshot checks where stab
 ## Implementation Order
 
 1. Add file picker model and overlay, with tests for scan/filter/insert behavior.
-2. Replace prompt input with prompt editor while preserving slash hints and app submission.
+2. Add file ingest screen reusing FilePicker, with tests.
+3. Replace prompt input with prompt editor while preserving slash hints and app submission.
 3. Add `@` file mention integration to the prompt editor.
 4. Replace conversation plain-text rerendering with structured user/assistant blocks and Markdown streaming.
 5. Refactor sidebar into section widgets backed by existing app events.
@@ -339,6 +357,7 @@ For visual regressions, use Textual pilot tests and screenshot checks where stab
 - Resumed chats render with the same structured conversation UI.
 - Sidebar shows workspace, chat, files, run trace, commands, doctor findings, and failures as separate readable sections.
 - Workspace manager still supports create/switch/delete/close and has a navigable file panel.
+- User can copy files from arbitrary host paths into the active workspace via `f3` / `/upload` / workspace manager button.
 - Existing Layer 4 tests pass after targeted updates.
 - Full test suite passes.
 - `CODEMAP.md` is updated if imports, definitions, inheritance, or call relationships change during implementation.

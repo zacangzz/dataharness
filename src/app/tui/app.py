@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -10,15 +11,21 @@ from textual.containers import Horizontal, Vertical
 from textual.widget import Widget
 from textual.widgets import Footer, Header, Input
 
+from textual import on
+
 from app.session import AppSession
 from app.tui.commands import DataHarnessCommandProvider, build_command_prefill
 from app.tui.event_consumer import EventConsumer
+from app.tui.file_picker import FilePicker, WorkspaceFileIndex, format_file_mention
 from app.tui.help import HelpScreen
 from app.tui.jump import Jumper, JumpOverlay
 from app.tui.prompt_bar import PromptBar
+from app.tui.prompt_editor import PromptEditor
 from app.tui.run_trace import RunTrace
 from app.tui.screens import ApprovalScreen, ClarificationScreen
+from app.tui.screens.file_ingest import FileIngestScreen
 from app.tui.screens.workspace_manager import WorkspaceManagerScreen
+from app.tui.sidebar_sections import InsertMentionRequested, ResumeChatRequested
 from app.tui.widgets import (
     ConversationPane,
     SidebarPane,
@@ -41,7 +48,9 @@ class DataHarnessApp(App[None]):
     BINDINGS = [
         Binding("ctrl+p", "command_palette", "Commands"),
         Binding("ctrl+o", "toggle_jump_mode", "Jump", id="jump"),
+        Binding("ctrl+f", "open_files", "Files"),
         Binding("f2", "open_workspaces", "Workspaces"),
+        Binding("f3", "upload_files", "Upload"),
         Binding("f1,ctrl+question_mark", "help", "Help", id="help"),
     ]
 
@@ -181,6 +190,30 @@ class DataHarnessApp(App[None]):
         self._emit(EventKind.APP_MOUNT_END, {"missing_ids": missing})
         self._emit(EventKind.APP_READY)
         self.run_worker(self._subscribe_status())
+        self.run_worker(self._refresh_sidebar_resources())
+
+    async def _refresh_sidebar_resources(self) -> None:
+        workspace_dir = self._workspace_dir
+        workspace_id = self._state.workspace_id
+        try:
+            sidebar = self.query_one("#sidebar", SidebarPane)
+        except Exception:
+            return
+        loop = asyncio.get_running_loop()
+        entries = await loop.run_in_executor(
+            None, lambda: WorkspaceFileIndex(workspace_dir).scan()
+        )
+        sidebar.update_files([entry.path for entry in entries])
+        try:
+            chats = await self._session.list_chats(workspace_id)
+        except Exception:
+            sidebar.update_chats([])
+        else:
+            sidebar.update_chats(list(chats))
+        try:
+            self.query_one("#prompt_bar", PromptBar).update_state(self._state)
+        except Exception:
+            pass
 
     async def _subscribe_status(self) -> None:
         try:
@@ -232,6 +265,12 @@ class DataHarnessApp(App[None]):
                 return
             if command == "workspaces":
                 await self.action_open_workspaces()
+                return
+            if command == "files":
+                await self.action_open_files()
+                return
+            if command == "upload":
+                await self.action_upload_files()
                 return
             if command in {"exit", "quit"}:
                 self.exit()
@@ -349,7 +388,9 @@ class DataHarnessApp(App[None]):
 
     def _handle_turn_failed(self, event) -> None:
         self._trace.failed(event.failure_summary, event.error_code)
-        self.query_one("#conversation", ConversationPane).discard_streaming()
+        self.query_one("#conversation", ConversationPane).append_failure(
+            event.failure_summary, event.error_code
+        )
         self.query_one("#sidebar", SidebarPane).failure(event.failure_summary, event.error_code)
         self._refresh_trace_widgets()
 
@@ -400,6 +441,7 @@ class DataHarnessApp(App[None]):
         self._active_chat_id = None
         self.query_one("#prompt_bar", PromptBar).update_state(self._state)
         self._handle_status_changed(type("_StatusEvent", (), {"snapshot": snapshot})())
+        self.run_worker(self._refresh_sidebar_resources())
 
     def _args_to_dict(self, spec, positional: list[str]) -> dict:
         out = {}
@@ -427,10 +469,12 @@ class DataHarnessApp(App[None]):
         self.run_worker(self._stream_command(descriptor.name, {}))
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
-        if event.input.id != "user_input":
+        # Retained for non-prompt Input widgets (e.g. workspace manager screen).
+        if event.input.id == "user_input":
             return
-        text = event.value.strip()
-        event.input.value = ""
+
+    async def on_prompt_editor_submitted(self, event: PromptEditor.Submitted) -> None:
+        text = event.text.strip()
         if not text:
             return
         await self.submit_user_text(text)
@@ -443,12 +487,58 @@ class DataHarnessApp(App[None]):
             pass
 
     async def action_open_workspaces(self) -> None:
+        def _after(result) -> None:
+            if isinstance(result, dict) and "insert_mention" in result:
+                self._insert_mention_into_editor(result["insert_mention"])
+
         await self.push_screen(
             WorkspaceManagerScreen(
                 session=self._session,
                 active_workspace_id=self._state.workspace_id,
-            )
+            ),
+            _after,
         )
+
+    async def action_open_files(self) -> None:
+        prompt = self.query_one("#prompt_bar", PromptBar)
+        try:
+            picker = prompt.query_one("#prompt_file_picker", FilePicker)
+        except Exception:
+            return
+        picker.index.workspace_dir = self._workspace_dir
+        picker.index.invalidate()
+        picker.refresh_query("")
+        picker.focus_picker()
+
+    async def action_upload_files(self) -> None:
+        def _after(_result) -> None:
+            self.run_worker(self._refresh_sidebar_resources())
+
+        await self.push_screen(
+            FileIngestScreen(
+                session=self._session, workspace_id=self._state.workspace_id
+            ),
+            _after,
+        )
+
+    def _insert_mention_into_editor(self, path: str) -> None:
+        try:
+            editor = self.query_one("#prompt_bar", PromptBar).editor
+        except Exception:
+            return
+        editor.insert_text(format_file_mention(path) + " ")
+        try:
+            self.set_focus(editor)
+        except Exception:
+            pass
+
+    @on(ResumeChatRequested)
+    async def on_resume_chat_requested(self, event: ResumeChatRequested) -> None:
+        await self.action_resume_chat(event.chat_id)
+
+    @on(InsertMentionRequested)
+    def on_insert_mention_requested(self, event: InsertMentionRequested) -> None:
+        self._insert_mention_into_editor(event.path)
 
     async def action_toggle_jump_mode(self) -> None:
         focused = self.focused

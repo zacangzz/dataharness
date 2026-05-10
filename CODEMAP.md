@@ -51,22 +51,31 @@ src/app/agents/interaction.py           → app.agents.prompt_packages
 src/app/agents/intent_handlers.py       → (none)
 src/app/tui/__init__.py                 → (none)
 src/app/tui/app.py                      → app.session, app.tui.commands, app.tui.event_consumer,
-                                           app.tui.help, app.tui.jump, app.tui.prompt_bar,
+                                           app.tui.file_picker, app.tui.help, app.tui.jump,
+                                           app.tui.prompt_bar, app.tui.prompt_editor,
                                            app.tui.run_trace, app.tui.screens, app.tui.widgets,
-                                           app.tui.screens.workspace_manager
+                                           app.tui.screens.workspace_manager,
+                                           app.tui.screens.file_ingest, app.tui.sidebar_sections
 src/app/tui/models.py                   → (none)
 src/app/tui/commands.py                 → (none)
 src/app/tui/event_consumer.py           → app.events
 src/app/tui/help.py                     → (none)
 src/app/tui/jump.py                     → (none)
 src/app/tui/screens.py                  → (none)
-src/app/tui/widgets.py                  → app.tui.help
+src/app/tui/conversation.py             → (none)
+src/app/tui/file_picker.py              → (none)
+src/app/tui/prompt_editor.py            → (none)
+src/app/tui/sidebar.py                  → (none)
+src/app/tui/widgets.py                  → app.tui.conversation, app.tui.help, app.tui.sidebar,
+                                           app.tui.sidebar_sections
+src/app/tui/sidebar_sections.py         → (none)
 src/app/tui/run_trace.py                → (none)
-src/app/tui/prompt_bar.py               → app.tui.help
+src/app/tui/prompt_bar.py               → app.tui.file_picker, app.tui.help, app.tui.prompt_editor
 src/app/tui/screens/__init__.py         → (none; re-export)
 src/app/tui/screens/chat_manager.py     → (none)
 src/app/tui/screens/command_palette.py  → (none)
-src/app/tui/screens/workspace_manager.py→ (none)
+src/app/tui/screens/workspace_manager.py→ app.tui.file_picker, app.tui.screens.file_ingest
+src/app/tui/screens/file_ingest.py      → app.tui.file_picker
 src/app/tui/screens/workspace_modal.py  → (none)
 
 src/harness/__init__.py                 → harness.app_store, harness.paths, harness.workspace
@@ -177,9 +186,13 @@ src/worker/sandbox_bootstrap.py         → (subprocess; no static src.* imports
 - `App[None]` ← `DataHarnessApp` (app/tui/app.py)
 - `Screen` ← `ApprovalScreen`, `ClarificationScreen` (screens.py); `ChatManagerScreen`, `CommandPaletteScreen`, `WorkspaceManagerScreen`, `WorkspaceModal` (screens/*)
 - `ModalScreen` ← `HelpScreen` (help.py), `JumpOverlay` (jump.py)
-- `Static` ← `WorkspaceBar`, `PlanPane`, `StepStatusPane`, `ArtifactsPane`, `ContextMemoryPane`, `DoctorPane`, `FailurePane`, `ProvenancePane`, `StatusPane` (widgets.py)
-- `RichLog` ← `ConversationPane`, `SidebarPane` (widgets.py)
-- `Vertical` ← `PromptBar` (prompt_bar.py)
+- `Static` ← `WorkspaceBar`, `PlanPane`, `StepStatusPane`, `ArtifactsPane`, `ContextMemoryPane`, `DoctorPane`, `FailurePane`, `ProvenancePane`, `StatusPane` (widgets.py); `UserMessageBlock`, `SystemMessageBlock` (conversation.py)
+- `VerticalScroll` ← `ConversationPane`, `SidebarPane` (widgets.py)
+- `Vertical` ← `PromptBar` (prompt_bar.py); `AssistantMessageBlock` (conversation.py); `WorkspaceSection`, `ChatsSection`, `FilesSection`, `TraceSection`, `CommandsSection`, `DoctorSection`, `FailuresSection` (sidebar_sections.py)
+- `ModalScreen` ← `FileIngestScreen` (screens/file_ingest.py)
+- `Message` ← `ResumeChatRequested`, `InsertMentionRequested` (sidebar_sections.py); `FilePicker.Selected`, `FilePicker.Confirmed`, `FilePicker.Dismissed` (file_picker.py)
+- `TextArea` ← `PromptEditor` (prompt_editor.py)
+- `Widget` ← `FilePicker` (file_picker.py)
 - `Provider` ← `DataHarnessCommandProvider` (commands.py)
 
 **Other:**
@@ -287,6 +300,13 @@ user keystroke
 | `EventConsumer` | `src/app/tui/event_consumer.py` |
 | `ConversationPane` / `SidebarPane` / `WorkspaceBar` (+ panes) | `src/app/tui/widgets.py` |
 | `PromptBar` | `src/app/tui/prompt_bar.py` |
+| `PromptEditor` | `src/app/tui/prompt_editor.py` |
+| `FilePicker` (with multiselect/Confirmed/Dismissed/update_root/focus_picker/dismiss_picker) / `WorkspaceFileIndex` / `WorkspaceFileEntry` | `src/app/tui/file_picker.py` |
+| `format_file_mention` / `filter_file_entries` | `src/app/tui/file_picker.py` |
+| `FileIngestScreen` | `src/app/tui/screens/file_ingest.py` |
+| `WorkspaceSection` / `ChatsSection` / `FilesSection` / `TraceSection` / `CommandsSection` / `DoctorSection` / `FailuresSection` / `ResumeChatRequested` / `InsertMentionRequested` | `src/app/tui/sidebar_sections.py` |
+| `SidebarState` | `src/app/tui/sidebar.py` |
+| `UserMessageBlock` / `AssistantMessageBlock` / `SystemMessageBlock` | `src/app/tui/conversation.py` |
 | `ApprovalScreen` / `ClarificationScreen` | `src/app/tui/screens.py` |
 | `WorkspaceManagerScreen` | `src/app/tui/screens/workspace_manager.py` |
 | `HelpScreen` | `src/app/tui/help.py` |
@@ -457,9 +477,11 @@ Marker.
 - `app.session.AppSession`
 - `app.tui.commands.DataHarnessCommandProvider, build_command_prefill`
 - `app.tui.event_consumer.EventConsumer`
+- `app.tui.file_picker.WorkspaceFileIndex`
 - `app.tui.help.HelpScreen`
 - `app.tui.jump.Jumper, JumpOverlay`
 - `app.tui.prompt_bar.PromptBar`
+- `app.tui.prompt_editor.PromptEditor`
 - `app.tui.run_trace.RunTrace`
 - `app.tui.screens.ApprovalScreen, ClarificationScreen`
 - `app.tui.screens.workspace_manager.WorkspaceManagerScreen`
@@ -479,7 +501,9 @@ Marker.
   - `apply_workspace_snapshot(snapshot)`
   - `_args_to_dict(spec, positional)`
   - `handle_command_palette_selection(descriptor)`
-  - `on_input_submitted(event)`
+  - `on_input_submitted(event)` — preserved for non-prompt `Input` widgets
+  - `on_prompt_editor_submitted(PromptEditor.Submitted)` — primary prompt submit handler
+  - `_refresh_sidebar_resources()` — async; refreshes sidebar files/chats from `WorkspaceFileIndex` + chat store
   - `action_resume_chat`, `action_open_workspaces`, `action_toggle_jump_mode`, `action_help`
   - `handle_approval_decision(plan, step_contract, decision)` → `_stream_resume_approved`
   - `handle_clarification_response(text)` → `_stream_clarification`
@@ -509,6 +533,17 @@ Marker.
   - `_descriptors()`, `_callback_for(descriptor)`, `discover() -> Hits`, `search(query) -> Hits`
 **Internal calls:** routes to `app.handle_command_palette_selection`
 
+### `src/app/tui/conversation.py`
+**Imports:** `textual.app.ComposeResult`, `textual.containers.Vertical`, `textual.widgets.{Markdown, Static}`
+**Defines:**
+- **class** `UserMessageBlock(Static)` — single-message block; CSS class `message-user`
+  - `__init__(text)`, `text_buffer()`
+- **class** `AssistantMessageBlock(Vertical)` — Markdown-rendered assistant block; CSS class `message-assistant`
+  - `__init__(text="")`, `compose()`, `update_text(text)`, `append_delta(text)`, `text_buffer()`
+- **class** `SystemMessageBlock(Static)` — system/notice block; CSS class `message-system`
+  - `__init__(text)`, `text_buffer()`
+**Notes:** consumed by `widgets.ConversationPane` for transcript rendering
+
 ### `src/app/tui/event_consumer.py`
 **Imports:** `app.events.AppEvent`
 **Defines:**
@@ -517,6 +552,25 @@ Marker.
   - `__init__(handlers: dict[str, Handler])`
   - `dispatch(event)` — lookup by `event.event_name`
 **Notes:** thin router; handler map built in `DataHarnessApp._build_consumer`
+
+### `src/app/tui/file_picker.py`
+**Imports:** `textual.{events, on}`, `textual.app.ComposeResult`, `textual.containers.Vertical`, `textual.message.Message`, `textual.widget.Widget`, `textual.widgets.{OptionList, Static, Tree}`, `textual.widgets.option_list.Option`
+**Defines:**
+- **const** `SKIPPED_DIRS: set[str]` — `.git`, `.venv`, `__pycache__`, `.pytest_cache`, `.mypy_cache`, `logs`, `tmp`
+- **class** `WorkspaceFileEntry` (frozen dataclass) — `path`, `is_dir`
+- **func** `format_file_mention(path) -> str` — escapes whitespace into `@"..."` form
+- **func** `filter_file_entries(entries, query, *, limit=30) -> list[WorkspaceFileEntry]` — fuzzy subsequence rank
+- **class** `WorkspaceFileIndex` — cached recursive scan (default `max_entries=5000`)
+  - `__init__(workspace_dir, *, max_entries=5000)`, `invalidate()`, `scan()`
+- **class** `FilePicker(Widget)` — fuzzy + tree dual-mode picker; emits `Selected(path)`, `Confirmed(paths)`, `Dismissed`
+  - inner **class** `Selected(Message)` — `path`
+  - inner **class** `Confirmed(Message)` — `paths: list[str]`
+  - inner **class** `Dismissed(Message)`
+  - `__init__(workspace_dir=None, *, root=None, allow_multiselect=False, mode_default="fuzzy")`
+  - `compose()`, `on_mount()`, `refresh_query(query)`, `toggle_mode()`, `focus_picker()`, `dismiss_picker()`, `update_root(new_root)`
+  - `_render_modes`, `_label_for`, `_build_tree(entries)`, `_highlighted_path`, `_toggle_selected`, `_select_current`
+  - `on_key(event)`, `on_option_selected(event)`
+**Notes:** Tab toggles fuzzy/tree; Enter posts `Selected` (or `Confirmed` if multiselect with staged items); Space toggles selection in multiselect; Escape dismisses; tree mode builds a true hierarchy via `_build_tree`
 
 ### `src/app/tui/help.py`
 **Defines:**
@@ -542,13 +596,13 @@ Marker.
 **Notes:** decision strings: approve→approved, reject→rejected, revise→revise_requested
 
 ### `src/app/tui/widgets.py`
-**Imports:** `app.tui.help.HelpData`
+**Imports:** `app.tui.help.HelpData`, `app.tui.conversation.{AssistantMessageBlock, SystemMessageBlock, UserMessageBlock}`, `app.tui.sidebar.SidebarState`, `app.tui.sidebar_sections.*`
 **Defines:**
 - **class** `WorkspaceBar(Static)` — header strip; `update_from(...)`
-- **class** `ConversationPane(RichLog)` — transcript + streaming buffer
+- **class** `ConversationPane(VerticalScroll)` — transcript + streaming buffer
   - `append_user/append_assistant/append_assistant_delta/finalize_assistant/discard_streaming/text_buffer/rehydrate_from_record/_refresh_text`
-- **class** `SidebarPane(RichLog)` — multi-section: status, trace, commands, doctor, failures
-  - `update_status`, `command_started/progress/completed`, `append_doctor_finding`, `doctor_report`, `failure`, `update_trace`, `text_buffer`, `_brief_result`, `_refresh_text`, `_render_text`
+- **class** `SidebarPane(VerticalScroll)` — composes per-section widgets (Workspace/Chats/Files/Trace/Commands/Doctor/Failures); routes update calls to children + `SidebarState`; aggregates `text_buffer` from `SidebarState`
+  - `compose`, `update_status`, `update_files(files)`, `update_chats(chats)` (accepts `list[str]` or `list[ChatSummary]`), `command_started/progress/completed`, `append_doctor_finding`, `doctor_report`, `failure`, `update_trace`, `text_buffer`, `_brief_result`
 - **class** `PlanPane(Static)` — `render_plan(plan)`
 - **class** `StepStatusPane(Static)` — `render_contract(contract, requires_approval)`
 - **class** `ArtifactsPane(Static)` — `render_refs(refs)`
@@ -566,18 +620,67 @@ Marker.
   - `command_started/progress/completed`, `turn_started`, `runtime_delta`, `final_message`, `cancelled`, `failed`
 **Notes:** used by `DataHarnessApp` to drive `WorkspaceBar` + `SidebarPane`
 
+### `src/app/tui/sidebar.py`
+**Defines:**
+- **class** `SidebarState` — sidebar model: workspace/run/runtime + files, chats (str + summaries), trace, commands, doctor, failure
+  - `__init__()` — defaults; ring buffers (`trace` 20, `commands` 12, `doctor` 8); `chat_summaries: list`
+  - `update_status(*, workspace_id, run_state, active_mode, runtime_status, chat_id=None)`
+  - `set_files(files)` (capped 12), `set_chats(chats)` (capped 8), `set_chat_summaries(summaries)` (derives `chats` strings)
+  - `update_trace(lines)`, `command_started(command)`, `command_progress(...)`, `command_completed(text)`
+  - `append_doctor(text)`, `set_failure(summary, error_code)`
+  - `text_buffer()` — multi-section snapshot (WORKSPACE/CHAT/FILES/TRACE/COMMANDS/DOCTOR/FAILURES)
+**Notes:** consumed by `widgets.SidebarPane` for aggregated `text_buffer()`
+
+### `src/app/tui/sidebar_sections.py`
+**Imports:** `textual.on`, `textual.app.ComposeResult`, `textual.containers.Vertical`, `textual.message.Message`, `textual.widgets.{OptionList, Static}`, `textual.widgets.option_list.Option`
+**Defines:**
+- **class** `ResumeChatRequested(Message)` — `chat_id`
+- **class** `InsertMentionRequested(Message)` — `path`
+- **class** `WorkspaceSection(Vertical)` — heading + `update_status(...)`, `text_buffer()`
+- **class** `ChatsSection(Vertical)` — heading + `OptionList`; `update_chats(summaries)`, `set_active_chat(id)`; selecting an option posts `ResumeChatRequested`
+- **class** `FilesSection(Vertical)` — heading + `OptionList`; `update_files(files)`; selecting an option posts `InsertMentionRequested`
+- **class** `_DequeSection(Vertical)` — bounded ring buffer body
+- **class** `TraceSection(_DequeSection)`, `CommandsSection(_DequeSection)`, `DoctorSection(_DequeSection)`
+- **class** `FailuresSection(Vertical)` — `set_failure(summary, error_code)`, `text_buffer()`
+**Notes:** All sections expose `text_buffer()` for diagnostics; SidebarPane keeps `SidebarState` updated and aggregates via `state.text_buffer()`.
+
+### `src/app/tui/screens/file_ingest.py`
+**Imports:** `textual.on`, `textual.binding.Binding`, `textual.containers.Vertical`, `textual.screen.ModalScreen`, `textual.widgets.{Footer, Static}`, `app.tui.file_picker.FilePicker`
+**Defines:**
+- **class** `FileIngestScreen(ModalScreen)`
+  - `__init__(*, session, workspace_id, initial_root=None)`
+  - `compose()` — yields header / `FilePicker(root=..., allow_multiselect=True)` / staged Static / `Footer`
+  - `action_dismiss_screen`, `action_change_root` (toggles between cwd/home for V1)
+  - `_on_single_selected(FilePicker.Selected)` — updates staged display
+  - `_on_confirmed(FilePicker.Confirmed)` — calls `session.ingest_files` and dismisses with result
+**Notes:** Layer 4-only; Layer 3 owns copy + registration via `AppSession.ingest_files`.
+
 ### `src/app/tui/prompt_bar.py`
-**Imports:** `app.tui.help.HelpData`
+**Imports:** `app.tui.file_picker.{FilePicker, format_file_mention}`, `app.tui.help.HelpData`, `app.tui.prompt_editor.PromptEditor`, `harness.command_registry.{HarnessCommandDescriptor, parse_slash}`
 **Defines:**
 - **type** `HintTarget = tuple[str, str]`
-- **class** `PromptBar(Vertical)` — input + hints + option list
-  - `compose`, `input` (prop), `on_mount`
+- **class** `PromptBar(Vertical)` — multiline editor + hints + option list + file picker
+  - `compose`, `editor` (prop → `PromptEditor`), `input` (prop alias for `editor`), `on_mount`
   - `update_status`, `update_state`, `prefill`
+  - `_workspace_dir`, `_file_query(text)`, `_show_file_picker(query)`
   - `refresh_hints(text)` — async; calls `session.list_commands`, `list_chats`, `list_workspaces`
   - `_build_hint_text`, `_format_descriptors`, `_build_hint_options`, `_set_hint_options`, `_has_hint_options`
   - `_accept_highlighted_hint`, `_prefill_command`, `_prefill_argument`, `_argument_candidates(arg_type)`
-  - `on_input_changed`, `on_input_submitted`, `on_hint_option_selected`, `on_key`, `text_buffer`
-**Notes:** completes on `/`-prefix; argument candidates fetched from session for `workspace_id`/`chat_id`
+  - `on_editor_changed(TextArea.Changed)` — listener for `#user_input`
+  - `on_prompt_editor_submitted(PromptEditor.Submitted)`
+  - `on_hint_option_selected`, `on_file_picker_selected(FilePicker.Selected)`, `on_file_picker_dismissed(FilePicker.Dismissed)`, `_picker_visible`, `on_key`, `text_buffer`
+**Notes:** completes on `/`-prefix; argument candidates fetched from session for `workspace_id`/`chat_id`; `@` triggers `FilePicker` overlay using cached `WorkspaceFileIndex`; `update_state` invalidates picker cache on workspace_id change; `escape` while picker visible dismisses it; `enter`/`up`/`down`/`tab` are forwarded to the picker while it is visible
+
+### `src/app/tui/prompt_editor.py`
+**Imports:** `textual.events`, `textual.message.Message`, `textual.widgets.TextArea`
+**Defines:**
+- **class** `PromptEditor(TextArea)` — multiline markdown editor; Enter submits, Ctrl+J / Shift+Enter insert newline
+  - inner **class** `Submitted(Message)` — `text`
+  - `__init__()` — TextArea with `language="markdown"`, no line numbers
+  - `text` (prop), `set_text(text)`, `insert_text(text)`, `clear_text()`
+  - `submit()` — posts `Submitted(stripped)` if non-empty; does NOT auto-clear
+  - `on_key(event)` — Ctrl+J / Shift+Enter newline, Enter submit
+**Notes:** receivers must call `clear_text()` after consuming `Submitted`
 
 ### `src/app/tui/screens/__init__.py`
 Re-exports `ApprovalScreen`, `ClarificationScreen` from `screens.py`.
@@ -594,14 +697,15 @@ Re-exports `ApprovalScreen`, `ClarificationScreen` from `screens.py`.
 
 ### `src/app/tui/screens/workspace_manager.py`
 **Defines:**
-- **class** `WorkspaceManagerScreen(Screen)` — list/create/switch/delete workspaces, file preview
-  - `compose`, `on_mount`, `refresh_list`
+- **class** `WorkspaceManagerScreen(Screen)` — list/create/switch/delete workspaces; right pane embeds a navigable `FilePicker` for the selected workspace; "Upload files…" button opens `FileIngestScreen`
+  - `compose`, `on_mount`, `refresh_list`, `_workspace_dir_for(workspace_id)`
   - `on_list_view_highlighted/selected`, `on_button_pressed`
-  - `action_create_workspace`, `action_switch_selected`, `action_cursor_down/up`, `action_delete_workspace`
+  - `action_create_workspace`, `action_switch_selected`, `action_cursor_down/up`, `action_delete_workspace`, `action_upload_files`
+  - `on_file_picker_selected(FilePicker.Selected)` — dismisses screen with `{"insert_mention": path}`; app inserts mention into prompt editor
   - `switch_to(workspace_id)` — calls `session.activate_workspace` → `app.apply_workspace_snapshot`
   - `action_close`, `_refresh_files`, `_list_files`, `_input_value`
   - `_show_error`, `_clear_error`, `_highlight_selected_workspace`, `_update_selected_from_item`, `text_buffer`
-**Notes:** opened via F2 / `/workspaces`
+**Notes:** opened via F2 / `/workspaces`; uses `app.tui.file_picker.WorkspaceFileIndex` for cached workspace file listings
 
 ### `src/app/tui/screens/workspace_modal.py`
 **Defines:**

@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
+from app.tui.file_picker import FilePicker, WorkspaceFileIndex
+from app.tui.screens.file_ingest import FileIngestScreen
+from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -37,6 +41,7 @@ class WorkspaceManagerScreen(Screen):
                     Button("New", id="workspace_new"),
                     Button("Switch", id="workspace_switch", variant="primary"),
                     Button("Delete", id="workspace_delete", variant="error"),
+                    Button("Upload files…", id="ws_upload"),
                     Button("Close", id="workspace_close"),
                     id="workspace_manager_actions",
                 ),
@@ -45,7 +50,7 @@ class WorkspaceManagerScreen(Screen):
             ),
             Vertical(
                 Label("Files", id="workspace_files_title"),
-                Static("", id="workspace_file_list"),
+                FilePicker(self._workspace_dir_for(self._selected_workspace_id), id="workspace_file_panel"),
                 id="workspace_manager_right",
             ),
             id="workspace_manager",
@@ -91,11 +96,27 @@ class WorkspaceManagerScreen(Screen):
             "workspace_new": self.action_create_workspace,
             "workspace_switch": self.action_switch_selected,
             "workspace_delete": self.action_delete_workspace,
+            "ws_upload": self.action_upload_files,
             "workspace_close": self.action_close,
         }
         handler = handlers.get(event.button.id or "")
         if handler is not None:
             await handler()
+
+    async def action_upload_files(self) -> None:
+        target = self._selected_workspace_id
+
+        async def _after(_result) -> None:
+            await self._refresh_files()
+
+        await self.app.push_screen(
+            FileIngestScreen(session=self.session, workspace_id=target),
+            _after,
+        )
+
+    def on_file_picker_selected(self, event: FilePicker.Selected) -> None:
+        self.dismiss({"insert_mention": event.path})
+        event.stop()
 
     async def action_create_workspace(self) -> None:
         workspace_id = self._input_value()
@@ -148,22 +169,23 @@ class WorkspaceManagerScreen(Screen):
     async def action_close(self) -> None:
         self.app.pop_screen()
 
+    def _workspace_dir_for(self, workspace_id: str) -> Path:
+        return self.session.app_root / "workspaces" / workspace_id
+
     async def _refresh_files(self) -> None:
         workspace_id = self._selected_workspace_id
-        workspace_dir = self.session.app_root / "workspaces" / workspace_id
-        data_dir = workspace_dir / "data"
-        files = self._list_files(data_dir)
-        body = "\n".join(files) if files else "no files"
-        self.query_one("#workspace_file_list", Static).update(body)
+        workspace_dir = self._workspace_dir_for(workspace_id)
+        try:
+            picker = self.query_one("#workspace_file_panel", FilePicker)
+        except Exception:
+            return
+        picker.index.workspace_dir = workspace_dir
+        picker.index.invalidate()
+        picker.refresh_query("")
 
     def _list_files(self, data_dir: Path) -> list[str]:
-        if not data_dir.exists():
-            return []
-        return [
-            path.name
-            for path in sorted(data_dir.iterdir())
-            if path.is_file() and not path.name.startswith(".")
-        ]
+        workspace_dir = data_dir.parent
+        return [entry.path for entry in WorkspaceFileIndex(workspace_dir).scan()]
 
     def _input_value(self) -> str:
         return self.query_one("#workspace_manager_input", Input).value.strip()

@@ -1,6 +1,8 @@
 import pytest
 from textual.widgets import Input
 
+from app.tui.prompt_editor import PromptEditor
+
 from app.tui.app import DataHarnessApp
 from app.tui.commands import DataHarnessCommandProvider, build_command_prefill
 
@@ -47,10 +49,10 @@ async def test_optional_argument_command_selection_does_not_prefill_input(tmp_pa
     async with app.run_test() as pilot:
         descriptors = await app._session.list_commands()
         help_command = next(d for d in descriptors if d.name == "help")
-        user_input = app.query_one("#user_input", Input)
-        user_input.value = "keep this text"
+        user_input = app.query_one("#user_input", PromptEditor)
+        user_input.set_text("keep this text")
 
         app.handle_command_palette_selection(help_command)
         await pilot.pause()
 
-        assert user_input.value == "keep this text"
+        assert user_input.text == "keep this text"

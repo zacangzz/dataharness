@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from textual import events, on
 from textual.containers import Vertical
-from textual.widgets import Input, OptionList, Static
+from textual.widgets import OptionList, Static, TextArea
 from textual.widgets.option_list import Option
 
+from app.tui.file_picker import FilePicker, format_file_mention
 from app.tui.help import HelpData
+from app.tui.prompt_editor import PromptEditor
 from harness.command_registry import HarnessCommandDescriptor, parse_slash
 
 
@@ -30,32 +33,88 @@ class PromptBar(Vertical):
         self._hint_text = ""
         self._hint_targets: dict[str, HintTarget] = {}
         self._last_descriptors: list[HarnessCommandDescriptor] = []
+        self._last_workspace_id: str | None = getattr(state, "workspace_id", None)
+        self._picker_was_visible: bool = False
 
     def compose(self):
         yield Static("", id="prompt_status")
-        yield Input(placeholder="Ask the data analyst or enter /help...", id="user_input")
+        yield PromptEditor(id="user_input")
         yield Static("", id="prompt_hints")
         yield OptionList(id="prompt_hint_options")
+        yield FilePicker(self._workspace_dir(), id="prompt_file_picker")
 
     @property
-    def input(self) -> Input:
-        return self.query_one("#user_input", Input)
+    def editor(self) -> PromptEditor:
+        return self.query_one("#user_input", PromptEditor)
+
+    @property
+    def input(self) -> PromptEditor:
+        return self.editor
 
     def on_mount(self) -> None:
         self.update_status(active_mode=self.state.active_agent_mode, run_state=str(self.state.state))
         self.query_one("#prompt_hint_options", OptionList).display = False
+        self.query_one("#prompt_file_picker", FilePicker).display = False
 
     def update_status(self, active_mode: str, run_state: str) -> None:
         self.query_one("#prompt_status", Static).update(f"{active_mode} | {run_state}")
 
     def update_state(self, state: Any) -> None:
+        prior = self._last_workspace_id
         self.state = state
+        new_id = getattr(state, "workspace_id", None)
+        if new_id != prior:
+            self._last_workspace_id = new_id
+            try:
+                picker = self.query_one("#prompt_file_picker", FilePicker)
+            except Exception:
+                return
+            picker.index.workspace_dir = self._workspace_dir()
+            picker.index.invalidate()
 
     def prefill(self, text: str) -> None:
-        self.input.value = text
-        self.input.cursor_position = len(text)
+        self.editor.set_text(text)
+
+    def _workspace_dir(self) -> Path:
+        return self.session.app_root / "workspaces" / self.state.workspace_id
+
+    def _file_query(self, text: str) -> str | None:
+        cursor_text = text
+        at_index = cursor_text.rfind("@")
+        if at_index < 0:
+            return None
+        token = cursor_text[at_index + 1 :]
+        if " " in token and not token.startswith('"'):
+            return None
+        return token.strip('"')
+
+    def _show_file_picker(self, query: str) -> None:
+        picker = self.query_one("#prompt_file_picker", FilePicker)
+        new_dir = self._workspace_dir()
+        if picker.index.workspace_dir != new_dir:
+            picker.index.workspace_dir = new_dir
+            picker.index.invalidate()
+        picker.refresh_query(query)
+        was_visible = self._picker_was_visible
+        picker.display = True
+        if not was_visible:
+            try:
+                picker.focus_picker()
+            except Exception:
+                pass
+        self._picker_was_visible = True
 
     async def refresh_hints(self, text: str) -> None:
+        file_query = self._file_query(text)
+        if file_query is not None:
+            self._hint_text = ""
+            self.query_one("#prompt_hints", Static).update("")
+            self._set_hint_options([])
+            self._show_file_picker(file_query)
+            return
+        self.query_one("#prompt_file_picker", FilePicker).display = False
+        self._picker_was_visible = False
+
         if not text.startswith("/"):
             self._hint_text = ""
             self.query_one("#prompt_hints", Static).update("")
@@ -189,7 +248,7 @@ class PromptBar(Vertical):
     def _has_hint_options(self) -> bool:
         return self.query_one("#prompt_hint_options", OptionList).option_count > 0
 
-    def _accept_highlighted_hint(self) -> None:
+    def _accept_highlighted_hint(self, source_text: str | None = None) -> None:
         option_list = self.query_one("#prompt_hint_options", OptionList)
         option = option_list.highlighted_option
         if option is None or option.id is None:
@@ -201,7 +260,7 @@ class PromptBar(Vertical):
         if kind == "command":
             self._prefill_command(value)
         elif kind == "argument":
-            self._prefill_argument(value)
+            self._prefill_argument(value, source_text=source_text)
         self._set_hint_options([])
         self.query_one("#prompt_hints", Static).update("")
         self._hint_text = ""
@@ -214,8 +273,8 @@ class PromptBar(Vertical):
         suffix = " " if descriptor.arguments else ""
         self.prefill(f"{descriptor.slash_alias}{suffix}")
 
-    def _prefill_argument(self, value: str) -> None:
-        text = self.input.value
+    def _prefill_argument(self, value: str, source_text: str | None = None) -> None:
+        text = source_text if source_text is not None else self.editor.text
         trailing = " " if text.endswith(" ") else ""
         parts = text.strip().split()
         if len(parts) <= 1:
@@ -236,23 +295,95 @@ class PromptBar(Vertical):
             return [chat.chat_id for chat in chats]
         return []
 
-    @on(Input.Changed, "#user_input")
-    async def on_input_changed(self, event: Input.Changed) -> None:
-        await self.refresh_hints(event.value)
+    @on(TextArea.Changed, "#user_input")
+    async def on_editor_changed(self, event: TextArea.Changed) -> None:
+        await self.refresh_hints(self.editor.text)
 
-    @on(Input.Submitted, "#user_input")
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        if not self._has_hint_options():
+    @on(PromptEditor.Submitted)
+    def on_prompt_editor_submitted(self, event: PromptEditor.Submitted) -> None:
+        # If hints visible, accept hint instead of letting submit propagate to app.
+        if self._has_hint_options():
+            self._accept_highlighted_hint(source_text=event.text)
+            event.stop()
             return
-        self._accept_highlighted_hint()
-        event.stop()
+        # Clear editor before dispatching to app so re-entrant typing is clean.
+        self.editor.clear_text()
 
     @on(OptionList.OptionSelected, "#prompt_hint_options")
     def on_hint_option_selected(self, event: OptionList.OptionSelected) -> None:
         self._accept_highlighted_hint()
         event.stop()
 
+    @on(FilePicker.Selected)
+    def on_file_picker_selected(self, event: FilePicker.Selected) -> None:
+        text = self.editor.text
+        at_index = text.rfind("@")
+        if at_index < 0:
+            return
+        prefix = text[:at_index]
+        suffix = " "
+        self.editor.set_text(prefix + format_file_mention(event.path) + suffix)
+        picker = self.query_one("#prompt_file_picker", FilePicker)
+        picker.display = False
+        self._picker_was_visible = False
+        try:
+            self.set_focus(self.editor)
+        except Exception:
+            pass
+        event.stop()
+
+    @on(FilePicker.Dismissed)
+    def on_file_picker_dismissed(self, event: FilePicker.Dismissed) -> None:
+        self._picker_was_visible = False
+        try:
+            self.set_focus(self.editor)
+        except Exception:
+            pass
+        event.stop()
+
+    def _picker_visible(self) -> bool:
+        try:
+            return bool(self.query_one("#prompt_file_picker", FilePicker).display)
+        except Exception:
+            return False
+
     def on_key(self, event: events.Key) -> None:
+        if event.key == "escape":
+            if self._picker_visible():
+                picker = self.query_one("#prompt_file_picker", FilePicker)
+                picker.dismiss_picker()
+                event.prevent_default()
+                event.stop()
+                return
+            if self._has_hint_options():
+                self._set_hint_options([])
+                self.query_one("#prompt_hints", Static).update("")
+                self._hint_text = ""
+                event.prevent_default()
+                event.stop()
+                return
+            return
+
+        if self._picker_visible():
+            picker = self.query_one("#prompt_file_picker", FilePicker)
+            if event.key in ("up", "down", "tab"):
+                if event.key == "tab":
+                    picker.toggle_mode()
+                else:
+                    option_list = picker.query_one("#file_picker_options", OptionList)
+                    if event.key == "down":
+                        option_list.action_cursor_down()
+                    else:
+                        option_list.action_cursor_up()
+                event.prevent_default()
+                event.stop()
+                return
+            if event.key == "enter":
+                picker._select_current()
+                event.prevent_default()
+                event.stop()
+                return
+
         if not self._has_hint_options():
             return
         option_list = self.query_one("#prompt_hint_options", OptionList)

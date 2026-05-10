@@ -4,7 +4,20 @@ from collections import deque
 import json
 
 from app.tui.help import HelpData
-from textual.widgets import RichLog, Static
+from app.tui.conversation import AssistantMessageBlock, SystemMessageBlock, UserMessageBlock
+from app.tui.sidebar import SidebarState
+from app.tui.sidebar_sections import (
+    ChatsSection,
+    CommandsSection,
+    DoctorSection,
+    FailuresSection,
+    FilesSection,
+    TraceSection,
+    WorkspaceSection,
+)
+from textual.app import ComposeResult
+from textual.containers import VerticalScroll
+from textual.widgets import Static
 
 
 class WorkspaceBar(Static):
@@ -32,7 +45,7 @@ class WorkspaceBar(Static):
         )
 
 
-class ConversationPane(RichLog):
+class ConversationPane(VerticalScroll):
     can_focus = True
     help = HelpData(
         title="Conversation",
@@ -40,70 +53,123 @@ class ConversationPane(RichLog):
     )
 
     def __init__(self, **kwargs) -> None:
-        super().__init__(min_width=1, wrap=True, highlight=False, markup=False, **kwargs)
-        self._lines: list[str] = []
-        self._streaming_buffer: list[str] = []
+        super().__init__(**kwargs)
+        self._blocks: list[object] = []
+        self._streaming_block: AssistantMessageBlock | None = None
+
+    def _safe_mount(self, widget) -> None:
+        try:
+            self.mount(widget)
+        except Exception:
+            # When the pane is not yet mounted (e.g. used in unit tests
+            # outside an App context), fall back to a no-op mount and
+            # rely on text_buffer() for assertions.
+            pass
+
+    def _safe_scroll_end(self) -> None:
+        try:
+            self.scroll_end(animate=False)
+        except Exception:
+            pass
 
     def append_user(self, text: str) -> None:
-        self._lines.append(f"> {text}")
-        self._refresh_text()
+        block = UserMessageBlock(text)
+        self._blocks.append(block)
+        self._safe_mount(block)
+        self._safe_scroll_end()
 
     def append_assistant(self, text: str) -> None:
-        if not text:
-            return
-        self._lines.append(text)
-        self._refresh_text()
+        block = AssistantMessageBlock(text)
+        self._blocks.append(block)
+        self._safe_mount(block)
+        self._safe_scroll_end()
 
     def append_assistant_delta(self, event) -> None:
-        if event.text:
-            self._streaming_buffer.append(event.text)
-        self._refresh_text()
+        if self._streaming_block is None:
+            self._streaming_block = AssistantMessageBlock("")
+            self._blocks.append(self._streaming_block)
+            self._safe_mount(self._streaming_block)
+        self._streaming_block.append_delta(event.text)
+        self._safe_scroll_end()
 
     def finalize_assistant(self, text: str) -> None:
-        self._streaming_buffer = []
-        self._lines.append(text)
-        self._refresh_text()
+        if self._streaming_block is None:
+            self.append_assistant(text)
+            return
+        self._streaming_block.update_text(text)
+        self._streaming_block = None
+        self._safe_scroll_end()
+
+    def append_failure(self, summary: str, error_code: str) -> None:
+        self.discard_streaming()
+        block = SystemMessageBlock(f"{error_code}: {summary}")
+        self._blocks.append(block)
+        self._safe_mount(block)
+        self._safe_scroll_end()
 
     def discard_streaming(self) -> None:
-        self._streaming_buffer = []
-        self._refresh_text()
+        if self._streaming_block is not None:
+            try:
+                self._blocks.remove(self._streaming_block)
+            except ValueError:
+                pass
+            try:
+                self._streaming_block.remove()
+            except Exception:
+                pass
+            self._streaming_block = None
 
     def text_buffer(self) -> str:
-        if self._streaming_buffer:
-            return "\n".join(self._lines + ["".join(self._streaming_buffer)])
-        return "\n".join(self._lines)
+        parts: list[str] = []
+        for block in self._blocks:
+            text_buffer = getattr(block, "text_buffer", None)
+            if callable(text_buffer):
+                parts.append(text_buffer())
+        return "\n".join(parts)
 
     def rehydrate_from_record(self, record) -> None:
-        self._lines = []
-        for m in record.messages:
-            prefix = "> " if m.role == "user" else ""
-            self._lines.append(f"{prefix}{m.text}")
-        self._streaming_buffer = []
-        self._refresh_text()
+        try:
+            self.remove_children()
+        except Exception:
+            pass
+        self._blocks = []
+        self._streaming_block = None
+        for message in record.messages:
+            if message.role == "user":
+                self.append_user(message.text)
+            elif message.role == "assistant":
+                self.append_assistant(message.text)
+            else:
+                block = SystemMessageBlock(message.text)
+                self._blocks.append(block)
+                self._safe_mount(block)
 
-    def _refresh_text(self) -> None:
-        self.clear()
-        text = self.text_buffer()
-        if text:
-            self.write(text, scroll_end=True)
 
-
-class SidebarPane(RichLog):
+class SidebarPane(VerticalScroll):
     can_focus = True
     help = HelpData(
         title="Sidebar",
-        description="Shows workspace status, run trace, command progress, doctor findings, and failures.",
+        description="Shows workspace, chat, files, run trace, command progress, doctor findings, and failures.",
     )
 
     def __init__(self, **kwargs) -> None:
-        super().__init__(min_width=1, wrap=True, highlight=False, markup=False, **kwargs)
-        self._status = "status: starting"
-        self._trace_lines: deque[str] = deque(maxlen=20)
-        self._command_lines: deque[str] = deque(maxlen=12)
-        self._doctor_lines: deque[str] = deque(maxlen=8)
-        self._failure: str | None = None
-        self._help = "F2 workspaces | slash: /workspaces  /list_workspaces  /switch_workspace <id>"
-        self._refresh_text()
+        super().__init__(**kwargs)
+        self._state = SidebarState()
+
+    def compose(self) -> ComposeResult:
+        yield WorkspaceSection(id="sidebar_workspace")
+        yield ChatsSection(id="sidebar_chats")
+        yield FilesSection(id="sidebar_files")
+        yield TraceSection(id="sidebar_trace")
+        yield CommandsSection(id="sidebar_commands")
+        yield DoctorSection(id="sidebar_doctor")
+        yield FailuresSection(id="sidebar_failures")
+
+    def _section(self, widget_id: str, cls):
+        try:
+            return self.query_one(f"#{widget_id}", cls)
+        except Exception:
+            return None
 
     def update_status(
         self,
@@ -112,52 +178,99 @@ class SidebarPane(RichLog):
         run_state: str,
         active_mode: str,
         runtime_status: str = "checking",
+        chat_id: str | None = None,
     ) -> None:
-        self._status = (
-            f"workspace: {workspace_id}\nstate: {run_state}\n"
-            f"mode: {active_mode}\nruntime: {runtime_status}"
+        self._state.update_status(
+            workspace_id=workspace_id,
+            run_state=run_state,
+            active_mode=active_mode,
+            runtime_status=runtime_status,
+            chat_id=chat_id,
         )
-        self._refresh_text()
+        section = self._section("sidebar_workspace", WorkspaceSection)
+        if section is not None:
+            section.update_status(
+                workspace_id=workspace_id,
+                run_state=run_state,
+                active_mode=active_mode,
+                runtime_status=runtime_status,
+            )
+        chats_section = self._section("sidebar_chats", ChatsSection)
+        if chats_section is not None:
+            chats_section.set_active_chat(chat_id)
+
+    def update_files(self, files: list[str]) -> None:
+        self._state.set_files(files)
+        section = self._section("sidebar_files", FilesSection)
+        if section is not None:
+            section.update_files(self._state.files)
+
+    def update_chats(self, chats) -> None:
+        if chats and not isinstance(chats[0], str):
+            self._state.set_chat_summaries(list(chats))
+        else:
+            self._state.set_chats(list(chats))
+        section = self._section("sidebar_chats", ChatsSection)
+        if section is not None:
+            section.update_chats(
+                self._state.chat_summaries if self._state.chat_summaries else self._state.chats
+            )
 
     def command_started(self, command: str) -> None:
-        self._command_lines.append(f"/{command}: running")
-        self._refresh_text()
+        self._state.command_started(command)
+        section = self._section("sidebar_commands", CommandsSection)
+        if section is not None:
+            section.replace(list(self._state.commands))
 
     def command_progress(self, command: str, phase: str, phase_index: int, phase_total: int) -> None:
-        self._command_lines.append(f"/{command}: {phase} {phase_index}/{phase_total}")
-        self._refresh_text()
+        self._state.command_progress(command, phase, phase_index, phase_total)
+        section = self._section("sidebar_commands", CommandsSection)
+        if section is not None:
+            section.replace(list(self._state.commands))
 
     def command_completed(self, command: str, result: dict) -> None:
-        if "error" in result:
-            self._command_lines.append(f"/{command}: {result['error']}")
+        if isinstance(result, dict) and "error" in result:
+            text = f"/{command}: {result['error']}"
         else:
-            self._command_lines.append(f"/{command}: {self._brief_result(result)}")
-        self._refresh_text()
+            text = f"/{command}: {self._brief_result(result)}"
+        self._state.command_completed(text)
+        section = self._section("sidebar_commands", CommandsSection)
+        if section is not None:
+            section.replace(list(self._state.commands))
 
     def append_doctor_finding(self, summary: str, severity: str) -> None:
-        self._doctor_lines.append(f"[{severity}] {summary}")
-        self._refresh_text()
+        self._state.append_doctor(f"[{severity}] {summary}")
+        section = self._section("sidebar_doctor", DoctorSection)
+        if section is not None:
+            section.replace(list(self._state.doctor))
 
     def doctor_report(self, summary_counts: dict, recommendations: list[str]) -> None:
         counts = ", ".join(f"{k}: {v}" for k, v in summary_counts.items()) or "no findings"
         recs = "; ".join(recommendations[:3]) or "no recommendations"
-        self._doctor_lines.append(f"report: {counts}")
-        self._doctor_lines.append(recs)
-        self._refresh_text()
+        self._state.append_doctor(f"report: {counts}")
+        self._state.append_doctor(recs)
+        section = self._section("sidebar_doctor", DoctorSection)
+        if section is not None:
+            section.replace(list(self._state.doctor))
 
     def failure(self, summary: str, error_code: str) -> None:
-        self._failure = f"{error_code}: {summary}"
-        self._refresh_text()
+        self._state.set_failure(summary, error_code)
+        section = self._section("sidebar_failures", FailuresSection)
+        if section is not None:
+            section.set_failure(summary, error_code)
 
     def update_trace(self, lines: list[str]) -> None:
-        self._trace_lines.clear()
-        self._trace_lines.extend(lines)
-        self._refresh_text()
+        self._state.update_trace(lines)
+        section = self._section("sidebar_trace", TraceSection)
+        if section is not None:
+            section.replace(list(self._state.trace))
 
     def text_buffer(self) -> str:
-        return self._render_text()
+        return self._state.text_buffer()
 
-    def _brief_result(self, result: dict) -> str:
+    def _brief_result(self, result) -> str:
+        if not isinstance(result, dict):
+            return str(result)
         if "snapshot" in result:
             snap = result["snapshot"]
             return f"workspace {snap.get('workspace_id')} {snap.get('run_state')}"
@@ -170,24 +283,6 @@ class SidebarPane(RichLog):
         if "chat" in result:
             return f"chat {result['chat'].get('chat_id')}"
         return json.dumps(result, sort_keys=True)[:160]
-
-    def _refresh_text(self) -> None:
-        self.clear()
-        self.write(self._render_text(), scroll_end=True)
-
-    def _render_text(self) -> str:
-        trace = "\n".join(self._trace_lines) or "no trace yet"
-        commands = "\n".join(self._command_lines) or "no commands yet"
-        doctor = "\n".join(self._doctor_lines) or "no doctor findings"
-        failure = self._failure or "no failures"
-        return (
-            f"STATUS\n{self._status}\n\n"
-            f"TRACE\n{trace}\n\n"
-            f"COMMANDS\n{commands}\n\n"
-            f"DOCTOR\n{doctor}\n\n"
-            f"FAILURES\n{failure}\n\n"
-            f"{self._help}"
-        )
 
 
 class PlanPane(Static):

@@ -80,3 +80,9 @@
 ## Orchestrator persists user message before building runtime messages — do not duplicate
 - `Orchestrator.run_turn` appends the user message to the chat store and then passes the resulting `chat_record` into `RuntimeRequestBuilder.build_messages`. The current user turn is therefore already inside `chat_record.messages` and gets emitted by the recent-turns loop.
 - `build_messages` must not unconditionally append `current_user_text` again; guard the append on whether the last `recent` message already matches the current user turn. Tests asserting `msgs[-1].content == current_user_text` should be updated to use a "exactly-once" assertion instead.
+
+## Textual `@on(Message, css_selector)` requires `control` attribute on the message class
+- Using `@on(FilePicker.Selected, "#workspace_file_panel")` raises `OnDecoratorError: The message class must have a control to match with the on decorator`. Custom Message subclasses without a `control` ClassVar cannot be filtered by CSS selector — fall back to the framework `on_<message_name>` naming convention or a plain `@on(MessageClass)` without selector.
+
+## Textual `Tree` hierarchical population requires nested `node.add` then leaves
+- `tree.root.add_leaf(path_with_slashes)` makes a flat list. Real hierarchy needs `node = parent.add(name)` for each path component and `node.add_leaf(filename, data=full_path)` only at the leaf. After populating, call `tree.root.expand()` so the user sees children.
