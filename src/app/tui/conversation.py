@@ -57,6 +57,8 @@ def _clean(text: str) -> str:
 
 
 class UserMessageBlock(Static):
+    can_focus = True
+
     def __init__(self, text: str, **kwargs) -> None:
         cleaned = _clean(text) or text
         super().__init__(cleaned, markup=False, **kwargs)
@@ -68,6 +70,8 @@ class UserMessageBlock(Static):
 
 
 class AssistantMessageBlock(Vertical):
+    can_focus = True
+
     def __init__(self, text: str = "", **kwargs) -> None:
         super().__init__(**kwargs)
         self._text = text

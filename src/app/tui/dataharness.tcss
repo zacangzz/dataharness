@@ -122,6 +122,12 @@ Screen {
     width: 100%;
 }
 
+.message-user:focus,
+.message-assistant:focus {
+    border-left: thick $accent;
+    background: $boost;
+}
+
 .sidebar-section {
     padding: 0 1;
     margin: 0 0 1 0;

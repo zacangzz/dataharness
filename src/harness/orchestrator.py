@@ -1851,6 +1851,15 @@ class Orchestrator:
             except Exception as exc:  # noqa: BLE001
                 raise ValueError(f"step #{idx}: {exc}") from exc
 
+            for output in expected_outputs:
+                output_name = Path(output).name
+                if output_name and output_name not in code:
+                    raise ValueError(
+                        f"step #{idx}: code does not reference expected output {output!r}. "
+                        f"Every step must write each of its expected_outputs "
+                        f"(e.g. Path({output_name!r}).write_text(...))."
+                    )
+
             step_id = f"step_{idx}"
             plan_steps.append(PlanStep(
                 id=step_id,

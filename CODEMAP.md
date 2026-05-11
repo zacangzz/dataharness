@@ -50,12 +50,14 @@ src/app/agents/knowledge.py             → app.agents.prompt_packages
 src/app/agents/interaction.py           → app.agents.prompt_packages
 (agentic loop relocated to harness layer per spec §8.1; see src/harness/orchestrator.py:run_agentic_turn)
 src/app/tui/__init__.py                 → (none)
-src/app/tui/app.py                      → app.session, app.tui.commands, app.tui.event_consumer,
+src/app/tui/app.py                      → app.session, app.tui.clipboard, app.tui.commands,
+                                           app.tui.event_consumer,
                                            app.tui.file_picker, app.tui.help, app.tui.jump,
                                            app.tui.prompt_bar, app.tui.prompt_editor,
                                            app.tui.run_trace, app.tui.screens, app.tui.widgets,
                                            app.tui.screens.workspace_manager,
                                            app.tui.screens.file_ingest, app.tui.sidebar_sections
+src/app/tui/clipboard.py                → (none; stdlib subprocess/shutil/sys only)
 src/app/tui/models.py                   → (none)
 src/app/tui/commands.py                 → (none)
 src/app/tui/event_consumer.py           → app.events
@@ -299,6 +301,7 @@ user keystroke
 | `handle_knowledge_intent` | `src/harness/knowledge_intents.py` |
 | `to_app_event` | `src/app/event_mapping.py` |
 | `EventConsumer` | `src/app/tui/event_consumer.py` |
+| `ClipboardProvider` / `NativeClipboard` | `src/app/tui/clipboard.py` |
 | `ConversationPane` / `SidebarPane` / `WorkspaceBar` (+ panes) | `src/app/tui/widgets.py` |
 | `PromptBar` | `src/app/tui/prompt_bar.py` |
 | `PromptEditor` | `src/app/tui/prompt_editor.py` |
@@ -481,6 +484,7 @@ Marker.
 ### `src/app/tui/app.py`
 **Imports:**
 - `app.session.AppSession`
+- `app.tui.clipboard.ClipboardProvider, NativeClipboard`
 - `app.tui.commands.DataHarnessCommandProvider, build_command_prefill`
 - `app.tui.event_consumer.EventConsumer`
 - `app.tui.file_picker.FilePicker, WorkspaceFileIndex, format_file_mention`
@@ -511,7 +515,7 @@ Marker.
   - `on_prompt_editor_submitted(PromptEditor.Submitted)` — primary prompt submit handler
   - `_refresh_sidebar_resources()` — async; refreshes sidebar files/chats from `WorkspaceFileIndex` + chat store
   - `action_resume_chat`, `action_open_workspaces`, `action_open_files`, `action_upload_files`, `action_toggle_jump_mode`, `action_help`
-  - `action_copy_text`, `_copyable_text` — copy selected Textual text or focused widget text fallback
+  - `action_copy_text`, `action_paste_text`, `_copyable_text` — copy selected/focused conversation text via native clipboard + Textual fallback; paste native/Textual clipboard into prompt
   - `_insert_mention_into_editor(path)` — inserts formatted `@file` mention and restores editor focus
   - `handle_approval_decision(plan, step_contract, decision)` → `_stream_resume_approved`
   - `handle_clarification_response(text)` → `_stream_clarification`
@@ -520,6 +524,16 @@ Marker.
 - `_subscribe_status` runs as background worker (Textual) — subscribes to orchestrator status broker
 - `_trace: RunTrace` ring-buffers phase lines for `WorkspaceBar` + `SidebarPane`
 - Modals pushed/popped via Textual screen stack
+
+### `src/app/tui/clipboard.py`
+**Defines:**
+- **protocol** `ClipboardProvider` — Layer 4 copy/paste interface used by TUI app actions
+- **class** `NativeClipboard` — best-effort terminal OS clipboard provider:
+  - macOS: `pbcopy` / `pbpaste`
+  - Windows: PowerShell `Set-Clipboard` / `Get-Clipboard -Raw`, with `clip` copy fallback
+  - Linux/Unix: `wl-copy` / `wl-paste`, then `xclip`, then `xsel`
+  - `copy(text) -> bool`, `paste() -> str | None`; returns fallback signals on missing commands/timeouts/errors
+**Notes:** Layer 4 only; app code still keeps Textual local clipboard/OSC52 fallback for unsupported terminals.
 
 ### `src/app/tui/models.py`
 **Defines:**
@@ -1107,6 +1121,7 @@ Re-exports `PythonStepExecutor` (executor); `ExecutionEnvelope`, `ExecutionStatu
 **Defines:**
 - **vars** `INTERNAL_FILES`, `SANDBOX_VIOLATION_MARKERS`
 - **func** `allowed_code_roots() -> list[str]`
+- **func** `_stage_declared_inputs(*, workspace_dir, tmp_dir, declared_inputs) -> set[Path]` — symlinks declared inputs under tmp_dir preserving subpath; returns top-level staged dirs for `_write_envelope` filtering
 - **func** `_subprocess_env() -> dict[str,str]` — adds `src/` to PYTHONPATH; propagates `DATAHARNESS_BOOT_ID/SESSION_ID/TURN_ID/STEP_ID`
 - **func** `_decode`, `_to_step_task_status`
 - **class** `_TaskRecord` (dataclass) — `task_id`, `request`, `status`, `process`, `cancel_event`, `done_event`, `envelope`, `runner_task`
@@ -1154,9 +1169,9 @@ Re-exports `PythonStepExecutor` (executor); `ExecutionEnvelope`, `ExecutionStatu
 **Defines:**
 - **vars** `NETWORK_MODULES`, `SHELL_MODULES`, `STDLIB_ALLOWLIST`, `CODE_SUFFIXES`, `BLOCKED_AUDIT_EVENTS`, `WRITE_OPEN_FLAGS`, `WRITE_MODE_CHARS`
 - **func** `_is_relative_to(path, root)`, `_is_write_mode(mode_raw)`
-- **func** `main() -> int` — entry: load JSON config → set RLIMIT_AS → preload importlib/pkgutil → install `guarded_import` + audit hook → `runpy.run_path(script_path, "__main__")`
+- **func** `main() -> int` — entry: load JSON config → set RLIMIT_AS → preload importlib/pkgutil → install `guarded_import` + audit hook (with nested package-frame helpers) → `runpy.run_path(script_path, "__main__")`
 **Notes:**
-- Import hook: blocks network/shell unless allowed; whitelists preloaded modules
+- Import hook: blocks user network/shell unless allowed; whitelists preloaded modules; allows dependency imports issued from already-allowed package frames while audit-blocking dangerous operations
 - Audit hook: enforces open() read/write boundaries via allowed_reads + allowed_write_roots; blocks `socket.__new__`/`subprocess.Popen`/`os.system`
 - Python install roots exempted (stdlib data files)
 

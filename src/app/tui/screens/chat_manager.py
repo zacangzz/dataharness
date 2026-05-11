@@ -36,8 +36,21 @@ class ChatManagerScreen(Screen):
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "create_chat":
-            await self.session.create_chat(self.workspace_id)
-            await self.refresh_list()
+            summary = await self.session.create_chat(self.workspace_id)
+            app = self.app
+            app._active_chat_id = summary.chat_id
+            try:
+                from app.tui.widgets import ConversationPane
+                pane = app.query_one("#conversation", ConversationPane)
+                try:
+                    pane.remove_children()
+                except Exception:
+                    pass
+                pane._blocks = []
+                pane._streaming_block = None
+            except Exception:
+                pass
+            app.pop_screen()
         elif event.button.id == "close_chat_manager":
             self.app.pop_screen()
 

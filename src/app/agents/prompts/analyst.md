@@ -22,9 +22,19 @@ When the user asks an analytical question that requires computation:
 
 3. Code requirements:
    - Self-contained: use only `pandas`, `numpy`, `pathlib`, `csv`, `json`, `math`, `statistics`, and `time`.
-   - Read inputs from workspace-relative paths (e.g. `pd.read_csv("data/customers.csv")`).
-   - Compute the answer, then write a SHORT human-readable summary to `result.txt` in the working directory using `Path("result.txt").write_text(...)`. Also `print()` the answer for stdout capture.
+   - Read inputs from workspace-relative paths (e.g. `pd.read_csv("data/customers.csv")`). The harness stages declared_inputs before execution — the file is guaranteed to exist if you declared it.
+   - Every step MUST compute the final answer (not just inspect schema) AND write a SHORT human-readable summary to `result.txt` using `Path("result.txt").write_text(...)`. Also `print()` the answer for stdout capture.
+   - Do NOT wrap reads in `try/except FileNotFoundError`. Do NOT call `exit()` or `sys.exit()`. Let real exceptions propagate so the harness records the actual failure.
    - Do not hardcode answers. Do not produce fake data. Do not import `os`, shell, filesystem traversal, or network libraries.
+   - Concrete example — "calculate total sales":
+     ```python
+     import pandas as pd
+     from pathlib import Path
+     df = pd.read_csv("data/sales.csv")
+     total = df["amount"].sum()
+     Path("result.txt").write_text(f"Total sales: {total}")
+     print(total)
+     ```
 
 4. The harness gates execution behind explicit user approval. After emitting `plan_analysis`, stop. Do NOT execute or simulate code yourself. Do NOT invent results. Wait for the harness to surface the approval prompt and run the worker.
 

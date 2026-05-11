@@ -53,6 +53,23 @@ def main() -> int:
         Path(sys.prefix).resolve(),
         Path(sys.base_prefix).resolve(),
     })
+    # PyInstaller frozen worker: the subprocess has its own `_MEIPASS` bundle
+    # dir, which holds `.pyc`/`.so`/data files for every bundled package. Allow
+    # reads from there so `import pandas` etc. don't trip the audit hook.
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        meipass_resolved = Path(meipass).resolve()
+        if meipass_resolved not in python_install_roots:
+            python_install_roots.append(meipass_resolved)
+        if meipass_resolved not in allowed_code_roots:
+            allowed_code_roots.append(meipass_resolved)
+    if getattr(sys, "frozen", False):
+        try:
+            exe_parent = Path(sys.executable).resolve().parent
+            if exe_parent not in allowed_code_roots:
+                allowed_code_roots.append(exe_parent)
+        except (OSError, ValueError):
+            pass
 
     if resource is not None:
         try:
@@ -81,15 +98,54 @@ def main() -> int:
         if root_name in SHELL_MODULES and not allow_shell:
             raise PermissionError(f"shell import not allowed at {context}: {root_name}")
 
+    def _is_runtime_importer(globals_obj: object) -> bool:
+        if not isinstance(globals_obj, dict):
+            return False
+        file_value = globals_obj.get("__file__")
+        if not isinstance(file_value, (str, bytes, os.PathLike)):
+            return False
+        try:
+            importer_path = Path(file_value).resolve()
+        except (OSError, ValueError):
+            return False
+        if _is_relative_to(importer_path, workspace_dir):
+            return False
+        return any(_is_relative_to(importer_path, root) for root in allowed_code_roots)
+
+    def _allowed_package_frame_active() -> bool:
+        frame = sys._getframe()
+        while frame is not None:
+            file_value = frame.f_globals.get("__file__")
+            if isinstance(file_value, (str, bytes, os.PathLike)):
+                try:
+                    frame_path = Path(file_value).resolve()
+                except (OSError, ValueError):
+                    frame = frame.f_back
+                    continue
+                if (
+                    not _is_relative_to(frame_path, workspace_dir)
+                    and any(_is_relative_to(frame_path, root) for root in allowed_code_roots)
+                    and any(part in allowed_packages for part in frame_path.parts)
+                ):
+                    return True
+            frame = frame.f_back
+        return False
+
     def guarded_import(name: str, globals: object = None, locals: object = None, fromlist: tuple[str, ...] = (), level: int = 0) -> object:
+        if level > 0:
+            return original_import(name, globals, locals, fromlist, level)
         root_name = name.split(".", 1)[0]
+        package_dependency = _is_runtime_importer(globals) or _allowed_package_frame_active()
         # Explicitly block dangerous modules first — before any preload bypass.
-        _check_module_allowed(root_name, "runtime")
+        if not package_dependency:
+            _check_module_allowed(root_name, "runtime")
         # Allow re-imports of stdlib/infrastructure modules already loaded before user code runs.
         if root_name in preloaded or name in preloaded:
             return original_import(name, globals, locals, fromlist, level)
         # Block anything not in the explicit allowlist.
         if root_name not in allowed_packages and root_name not in STDLIB_ALLOWLIST:
+            if package_dependency:
+                return original_import(name, globals, locals, fromlist, level)
             raise PermissionError(f"package not allowed at runtime: {root_name}")
         return original_import(name, globals, locals, fromlist, level)
 
@@ -127,10 +183,16 @@ def main() -> int:
             _check_open(args)
         elif event == "import" and args:
             name = str(args[0]).split(".", 1)[0]
+            if not name:
+                return
+            package_dependency = _allowed_package_frame_active()
+            if not package_dependency:
+                _check_module_allowed(name, "runtime")
             if name in sys.modules:
                 return  # already loaded — allow
-            _check_module_allowed(name, "runtime")
             if name not in allowed_packages and name not in STDLIB_ALLOWLIST:
+                if package_dependency:
+                    return
                 raise PermissionError(f"package not allowed at runtime: {name}")
         elif event in BLOCKED_AUDIT_EVENTS:
             raise PermissionError(f"operation blocked by sandbox: {event}")

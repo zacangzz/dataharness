@@ -7,6 +7,7 @@ import json
 import os
 import platform
 import sys
+import sysconfig
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -44,7 +45,68 @@ SANDBOX_VIOLATION_MARKERS = (
 
 
 def allowed_code_roots() -> list[str]:
-    return [str(Path(entry).resolve()) for entry in sys.path if entry]
+    roots: list[str] = [str(Path(entry).resolve()) for entry in sys.path if entry]
+    # PyInstaller frozen binary: include the extracted bundle dir (`_MEIPASS`),
+    # the binary's parent dir, and stdlib/site-packages from sysconfig so the
+    # worker subprocess can read its own runtime files past the sandbox audit.
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        roots.append(str(Path(meipass).resolve()))
+    if getattr(sys, "frozen", False):
+        try:
+            roots.append(str(Path(sys.executable).resolve().parent))
+        except (OSError, ValueError):
+            pass
+    for key in ("stdlib", "platstdlib", "purelib", "platlib"):
+        try:
+            p = sysconfig.get_path(key)
+        except (KeyError, OSError):
+            p = None
+        if p:
+            roots.append(str(Path(p).resolve()))
+    return list(dict.fromkeys(roots))
+
+
+def _stage_declared_inputs(
+    *, workspace_dir: Path, tmp_dir: Path, declared_inputs: list[str],
+) -> set[Path]:
+    """Symlink each declared input under tmp_dir preserving subpath structure.
+
+    The worker subprocess runs with cwd=tmp_dir but prompts instruct the model
+    to read inputs at workspace-relative paths (e.g. "data/foo.csv"). Staging
+    via symlinks makes that convention actually resolve without changing cwd
+    (which would break artifact discovery in _write_envelope).
+
+    Returns the set of top-level dirs created under tmp_dir, so _write_envelope
+    can exclude them from produced-artifact discovery.
+    """
+    workspace_root = workspace_dir.resolve()
+    tmp_root = tmp_dir.resolve()
+    staged_roots: set[Path] = set()
+    for rel in declared_inputs:
+        rel_path = Path(rel)
+        if rel_path.is_absolute():
+            continue
+        source = (workspace_root / rel_path).resolve()
+        if not source.exists():
+            continue
+        try:
+            source.relative_to(workspace_root)
+        except ValueError:
+            continue
+        target = tmp_root / rel_path
+        if target.exists() or target.is_symlink():
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.symlink(source, target)
+        except OSError:
+            continue
+        # Track the top-level dir under tmp_dir (e.g. "data") to skip later.
+        top = rel_path.parts[0] if rel_path.parts else None
+        if top:
+            staged_roots.add(tmp_root / top)
+    return staged_roots
 
 
 def _subprocess_env() -> dict[str, str]:
@@ -234,6 +296,12 @@ class PythonStepExecutor:
             )
             return self._wrap_envelope(rec, inner, stdout_path, stderr_path, status="failed", return_code=None)
 
+        staged_input_roots = _stage_declared_inputs(
+            workspace_dir=request.workspace_dir,
+            tmp_dir=tmp_dir,
+            declared_inputs=list(envelope_perm.allowed_read_paths) + list(envelope_perm.registered_artifact_paths),
+        )
+
         config_path.write_text(json.dumps({
             "tmp_dir": str(tmp_dir),
             "workspace_dir": str(request.workspace_dir),
@@ -287,6 +355,7 @@ class PythonStepExecutor:
                 request, tmp_dir, stdout_path, stderr_path,
                 ExecutionStatus.TIMEOUT, FailureKind.TIMEOUT_OR_RESOURCE_EXHAUSTION,
                 "execution timed out",
+                staged_input_roots=staged_input_roots,
             )
             return self._wrap_envelope(rec, inner, stdout_path, stderr_path, status="timeout", return_code=proc.returncode)
 
@@ -309,6 +378,7 @@ class PythonStepExecutor:
                 request, tmp_dir, stdout_path, stderr_path,
                 ExecutionStatus.EXECUTION_ERROR, FailureKind.PYTHON_EXCEPTION,
                 "cancelled",
+                staged_input_roots=staged_input_roots,
             )
             return self._wrap_envelope(rec, inner, stdout_path, stderr_path, status="cancelled", return_code=proc.returncode)
 
@@ -330,6 +400,7 @@ class PythonStepExecutor:
             inner = self._write_envelope(
                 request, tmp_dir, stdout_path, stderr_path,
                 status, failure_kind, failure_summary,
+                staged_input_roots=staged_input_roots,
             )
             spec_status = "completed" if status == ExecutionStatus.OK else "failed"
             return self._wrap_envelope(rec, inner, stdout_path, stderr_path, status=spec_status, return_code=proc.returncode)
@@ -343,12 +414,14 @@ class PythonStepExecutor:
                 request, tmp_dir, stdout_path, stderr_path,
                 ExecutionStatus.SANDBOX_ERROR, FailureKind.SANDBOX_VIOLATION,
                 stderr_text,
+                staged_input_roots=staged_input_roots,
             )
         else:
             inner = self._write_envelope(
                 request, tmp_dir, stdout_path, stderr_path,
                 ExecutionStatus.EXECUTION_ERROR, FailureKind.PYTHON_EXCEPTION,
                 stderr_text,
+                staged_input_roots=staged_input_roots,
             )
         return self._wrap_envelope(rec, inner, stdout_path, stderr_path, status="failed", return_code=proc.returncode)
 
@@ -373,6 +446,7 @@ class PythonStepExecutor:
         diagnostics = {
             "underlying_status": str(inner.status),
             "failure_kind": str(inner.failure_kind),
+            "failure_summary": inner.failure_summary,
             "execution_metadata": inner.execution_metadata,
             "step_result_path": inner.step_result_path,
             "step_report_path": inner.step_report_path,
@@ -442,13 +516,18 @@ class PythonStepExecutor:
         failure_kind: FailureKind,
         failure_summary: str | None,
         dispatch_started: float | None = None,
+        staged_input_roots: set[Path] | None = None,
     ) -> ExecutionEnvelope:
         result_path = tmp_dir / "step_result.json"
         report_path = tmp_dir / "step_report.md"
+        staged_input_roots = staged_input_roots or set()
+        staged_resolved = {p.resolve() for p in staged_input_roots}
         artifact_refs = [
             as_posix_workspace_relative(request.workspace_dir, path)
             for path in tmp_dir.iterdir()
             if path.name not in INTERNAL_FILES
+            and not path.is_symlink()
+            and path.resolve() not in staged_resolved
         ]
         started_at = datetime.now(UTC)
         finished_at = datetime.now(UTC)
@@ -514,4 +593,5 @@ class PythonStepExecutor:
             artifact_refs=artifact_refs,
             execution_metadata=metadata,
             failure_kind=failure_kind,
+            failure_summary=failure_summary,
         )

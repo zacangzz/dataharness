@@ -23,7 +23,7 @@ async def test_plan_analysis_emits_plan_and_approval(tmp_path):
         "steps": [
             {
                 "purpose": "Count rows in customers.csv.",
-                "code": "import pandas as pd; print(len(pd.read_csv('data/customers.csv')))",
+                "code": "import pandas as pd\nfrom pathlib import Path\nn = len(pd.read_csv('data/customers.csv'))\nPath('result.txt').write_text(str(n))\nprint(n)",
                 "declared_inputs": ["data/customers.csv"],
                 "expected_outputs": ["result.txt"],
             }
@@ -94,6 +94,30 @@ async def test_plan_analysis_rejects_disallowed_imports_before_approval(tmp_path
     completed = [e for e in events if isinstance(e, CommandCompleted)]
     assert completed
     assert completed[0].result["error"] == "step #1: package not allowed: os"
+
+
+@pytest.mark.asyncio
+async def test_plan_analysis_rejects_code_missing_expected_output(tmp_path):
+    """Plan must be rejected before approval if code doesn't reference its expected_outputs."""
+    orch = Orchestrator(app_root=tmp_path)
+    handler = orch.registry.get_handler("plan_analysis")
+    args = {
+        "goal": "total sales",
+        "steps": [
+            {
+                "purpose": "Inspect columns.",
+                "code": "import pandas as pd\ndf = pd.read_csv('data/sales.csv')\nprint(df.columns.tolist())",
+                "declared_inputs": ["data/sales.csv"],
+                "expected_outputs": ["result.txt"],
+            }
+        ],
+    }
+    events = [ev async for ev in handler(_ctx(), args)]
+    assert not [e for e in events if isinstance(e, ApprovalRequired)]
+    completed = [e for e in events if isinstance(e, CommandCompleted)]
+    assert completed
+    assert "result.txt" in completed[0].result["error"]
+    assert "does not reference expected output" in completed[0].result["error"]
 
 
 def test_plan_analysis_in_runtime_callable_whitelist(tmp_path):

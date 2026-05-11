@@ -201,3 +201,53 @@
 - Fix `src/harness/orchestrator.py:run_agentic_turn`: detect `TurnFailed` whose `failure_summary` mentions "malformed tool", "tool_call", or "modelbehavior"; retry once with explicit nudge ("emit exactly one valid block: ... strict JSON — no literal newlines/tabs in string values, no extra keys").
 - Tests: alias/extra-key/coerce/default-args coverage in `test_tool_calls_control_chars.py`; `test_tool_calls.py` updated — strict-rejection-of-missing-arguments replaced with default-to-empty; added missing-name rejection.
 - Lesson: when introducing a recovery code path in a multi-iteration loop, audit every error_code branch — silent termination on unhandled codes leaves the user staring at a dead chat.
+
+## Worker sandbox audit must be PyInstaller-aware
+
+- Symptom (frozen binary only): `PermissionError: read outside sandbox: /…/dist/dataharness` raised by `worker/sandbox_bootstrap.py:_check_open` when user step does `import pandas as pd`. PyInstaller's `pyimod01_archive.extract` reads `.pyc`/`.so` from `sys._MEIPASS`; the audit hook treats those paths as "outside sandbox" because the parent's `sys.path` (used to build `allowed_code_roots`) does not list the worker subprocess's own `_MEIPASS`.
+- Two-side fix:
+  - `src/worker/executor.py:allowed_code_roots()` — extend with `sys._MEIPASS`, `Path(sys.executable).resolve().parent` (when frozen), and `sysconfig.get_path("stdlib"|"platstdlib"|"purelib"|"platlib")`. Deduplicate via `dict.fromkeys`.
+  - `src/worker/sandbox_bootstrap.py` (worker subprocess) — self-include its own `sys._MEIPASS` in both `python_install_roots` (non-code data files) and `allowed_code_roots` (`.pyc`/`.so` imports); also include `Path(sys.executable).resolve().parent` when frozen. Belt-and-suspenders so the child recovers even if parent's config omits.
+- Source mode unchanged: `sys._MEIPASS` is absent → frozen-aware branches are no-ops.
+- Tests: `tests/worker/test_sandbox_frozen_paths.py` covers sys.path inclusion, sysconfig path inclusion, `_MEIPASS` monkeypatch injection, frozen-exe parent injection, dedup invariant, and source-mode safety.
+- Pandas/numpy import chains use both empty-name relative imports (`from . import version`) and package dependency imports (`dateutil`, `ctypes`, `subprocess`) while package frames are active. The sandbox import guard must distinguish user-code imports from dependency imports issued by already-allowed package code; keep user `subprocess`/network imports blocked and rely on audit events such as `subprocess.Popen`/`socket.__new__` to block dangerous operations.
+
+## TUI Ctrl+C copy needs focusable message blocks + last-reply fallback
+
+- Textual claims mouse input by default → terminal-native drag-select doesn't work in most macOS terminals. Users couldn't copy assistant replies → resorted to screenshots.
+- Fix in `src/app/tui/conversation.py`: `AssistantMessageBlock.can_focus = True`, `UserMessageBlock.can_focus = True`. Visual `:focus` style added in `dataharness.tcss` (`.message-user:focus, .message-assistant:focus { border-left: thick $accent; background: $boost; }`).
+- Fix in `src/app/tui/app.py`: refactored `_copyable_text` → `_copyable_text_with_source()` returning `(text, source_label)`. Order: screen selection → focused widget's `selected_text` / `text_buffer` → **fallback** to most recent `AssistantMessageBlock` in `ConversationPane` (queries DOM first, then `pane._blocks` if DOM not yet flushed). `action_copy_text` notifies user with source + char count; warns when nothing copyable.
+- Binding `Ctrl+C/Super+C` now `show=True` so footer surfaces "Copy" hint.
+- Subtle gotcha hit during implementation: `ConversationPane` lives in `app.tui.widgets`, NOT `app.tui.conversation` — `from app.tui.conversation import ConversationPane` inside `_copyable_text_with_source` silently raised `ImportError` (swallowed by outer `try/except`), zeroing the fallback. Fixed by importing only `AssistantMessageBlock` from `conversation`; `ConversationPane` is module-level imported.
+- Tests: `tests/app/tui/test_copy_text.py` — focusable assertion, `Ctrl+C` fallback copies last assistant text, focused block path returns its own text, empty state returns blank tuple.
+
+## Terminal TUI clipboard needs a Layer 4 native-provider abstraction
+
+- Textual's `App.copy_to_clipboard()` stores an app-local clipboard and emits OSC52; Textual 8.2.4 notes this does not work on macOS Terminal, and `App.clipboard` explicitly contains only text copied inside the app.
+- Keep clipboard logic in Layer 4. `src/app/tui/clipboard.py:NativeClipboard` provides best-effort OS bridges (`pbcopy`/`pbpaste`, PowerShell clipboard commands, `wl-copy`/`xclip`/`xsel`) while `DataHarnessApp` still calls Textual copy for app-local/OSC52 fallback.
+- Paste should target the prompt editor only. `Ctrl+V`/`Cmd+V` first read the native provider, then fall back to Textual's app-local clipboard; sidebar/status do not need custom selection behavior.
+
+## Worker step `cwd` is `tmp_dir`, but prompts use workspace-relative paths — stage inputs
+
+- `src/worker/executor.py:_execute_async` launches the subprocess with `cwd=tmp_dir` (= `workspace_dir/artifacts/tmp/<run>/<step>/`). Outputs like `result.txt` and `step_result.json` naturally live there and `_write_envelope` iterates `tmp_dir.iterdir()` for artifact discovery — that part is correct.
+- `src/app/agents/prompts/analyst.md` tells the model: *"Read inputs from workspace-relative paths (e.g. `pd.read_csv("data/customers.csv")`)"*. With cwd=tmp_dir, that relative path resolves to `tmp_dir/data/...` → `FileNotFoundError: data/sales.csv` even though the sandbox policy *would* have allowed reading the absolute workspace path.
+- Earlier `tests/worker/test_executor.py:test_executor_allows_declared_pandas_numpy_imports` worked around it with `pd.read_csv(Path.cwd().parents[3] / 'data' / 'sales.csv')` — that hid the issue from tests while the prompt convention (and any real model output) would always break.
+- Fix: stage declared inputs as symlinks under `tmp_dir`, preserving subpath: `tmp_dir/data/sales.csv → workspace_dir/data/sales.csv`. New helper `_stage_declared_inputs(workspace_dir, tmp_dir, declared_inputs)` runs after policy validation and before subprocess launch; returns the set of top-level dirs it created.
+- Secondary fix in `_write_envelope`: filter out staged input scaffolding from `produced_artifact_paths` — skip `path.is_symlink()` AND skip top-level dirs whose `.resolve()` is in `staged_input_roots`. Otherwise `tmp_dir/data/` would be reported as a produced artifact.
+- Sandbox interaction: `_check_open` does `Path(target).resolve()` which follows the symlink to the workspace absolute path; that path is already in `allowed_reads` (populated by `validator.validate_read`), so the audit passes via the existing branch. No sandbox widening needed.
+- Approach not chosen: `cwd=workspace_dir` would break artifact discovery and pollute the workspace root with per-step `result.txt`. Copying inputs wastes disk; symlinks are O(1).
+- Tests added: `test_executor_stages_declared_inputs_as_symlinks` (symlink exists and points correctly), `test_executor_excludes_staged_inputs_from_produced_artifacts` (staged dirs/symlinks excluded from artifact list). Existing pandas test simplified to use the bare `'data/sales.csv'` path that the prompt convention promises.
+
+## `failure_summary` must travel from worker through diagnostics to TUI
+
+- Symptom: TUI showed `Analysis failed during execution: Data loaded successfully. Columns: [...]` — the actual failure was `missing expected outputs: ['result.txt']` (contract_error) but the user-visible message was just the step's stdout.
+- Cause: `_summarize_step_execution` in `src/harness/orchestrator.py:113-119` reads `envelope.diagnostics.get("failure_summary")` with fallback to `envelope.stdout`. But `_wrap_envelope` (`executor.py:446-452`) only copied `underlying_status`, `failure_kind`, `execution_metadata`, `step_result_path`, `step_report_path` — it never copied `failure_summary` from the inner `ExecutionEnvelope`. The summary was written to `step_result.json` on disk but never reached the in-memory diagnostics map.
+- Fix: added `failure_summary: str | None = None` to `worker.models.ExecutionEnvelope`; `_write_envelope` sets it on the returned envelope; `_wrap_envelope` copies it into `diagnostics["failure_summary"]`. Test: `test_executor_flags_missing_expected_outputs` now asserts `env.diagnostics["failure_summary"] == "missing expected outputs: ['table.csv']"`.
+
+## `plan_analysis` must reject plans whose code can't satisfy its own contract
+
+- Symptom: model emitted an inspection-only plan (`pd.read_csv(...); print(df.columns.tolist())`) with `expected_outputs=["result.txt"]` but no `result.txt` write. Harness approved, worker executed, contract failed *after* user approval — wasting an approval round.
+- Fix in `src/harness/orchestrator.py:_make_plan_analysis_handler`: after `validate_code_imports`, check that every `expected_outputs` filename appears as a literal substring in the submitted code. If not, raise `ValueError("step #N: code does not reference expected output 'result.txt'...")`. The agentic loop already feeds this error back to the model as a tool_call error → forced retry with a compliant plan, no user approval consumed.
+- Conservative literal-substring check (no AST walk): catches the actual failure mode (filename absent) without over-rejecting. Real code that writes to file X always mentions X in source.
+- Prompt hardening in `src/app/agents/prompts/analyst.md`: mandate compute+write (not inspection-only); forbid `try/except FileNotFoundError` defensive wrapping (harness stages inputs); forbid `exit()`/`sys.exit()`; added concrete "calculate total sales" example showing the expected idiom.
+- Tests updated: existing tests using `code="print(1)"` with `expected_outputs=["result.txt"]` now use compliant code (`Path('result.txt').write_text('1')`); new `test_plan_analysis_rejects_code_missing_expected_output` asserts the guard fires before `ApprovalRequired`.

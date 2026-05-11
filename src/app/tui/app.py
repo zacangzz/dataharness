@@ -14,6 +14,7 @@ from textual.widgets import Footer, Header, Input
 from textual import on
 
 from app.session import AppSession
+from app.tui.clipboard import ClipboardProvider, NativeClipboard
 from app.tui.commands import DataHarnessCommandProvider, build_command_prefill
 from app.tui.event_consumer import EventConsumer
 from app.tui.file_picker import FilePicker, WorkspaceFileIndex, format_file_mention
@@ -47,7 +48,8 @@ class DataHarnessApp(App[None]):
     # Keep the palette scoped to DataHarness commands; Textual system providers are intentionally omitted.
     COMMANDS = {DataHarnessCommandProvider}
     BINDINGS = [
-        Binding("ctrl+c,super+c", "copy_text", "Copy", show=False, priority=True),
+        Binding("ctrl+c,super+c", "copy_text", "Copy", show=True, priority=True),
+        Binding("ctrl+v,super+v", "paste_text", "Paste", show=False, priority=True),
         Binding("ctrl+p", "command_palette", "Commands"),
         Binding("ctrl+o", "toggle_jump_mode", "Jump", id="jump"),
         Binding("ctrl+f", "open_files", "Files"),
@@ -64,6 +66,7 @@ class DataHarnessApp(App[None]):
         state: RunStateRecord | None = None,
         telemetry: Telemetry | None = None,
         session_id: UUID | None = None,
+        clipboard: ClipboardProvider | None = None,
     ) -> None:
         super().__init__()
         self.telemetry = telemetry or Telemetry(resolve_telemetry_dir())
@@ -81,6 +84,7 @@ class DataHarnessApp(App[None]):
         self._run_state_text = str(self._state.state)
         self._active_mode_text = self._state.active_agent_mode
         self._runtime_status = "checking"
+        self._clipboard_provider = clipboard or NativeClipboard()
         self._emit(EventKind.APP_LIFECYCLE_CONSTRUCTED, {"title": self.TITLE})
 
     @property
@@ -513,35 +517,72 @@ class DataHarnessApp(App[None]):
         picker.focus_picker()
 
     def action_copy_text(self) -> None:
-        text = self._copyable_text()
+        text, source = self._copyable_text_with_source()
         if not text:
+            self.notify("Nothing to copy — focus a message (Tab) or select text first.", severity="warning")
             raise SkipAction()
         self.copy_to_clipboard(text)
+        destination = "system clipboard" if self._clipboard_provider.copy(text) else "app clipboard"
+        self.notify(f"Copied {source} to {destination} ({len(text)} chars).", timeout=2.0)
+
+    def action_paste_text(self) -> None:
+        try:
+            prompt = self.query_one("#prompt_bar", PromptBar)
+        except Exception:
+            raise SkipAction()
+
+        text = self._clipboard_provider.paste()
+        source = "system clipboard"
+        if not text:
+            text = self.clipboard
+            source = "app clipboard"
+        if not text:
+            self.notify("Nothing to paste.", severity="warning", timeout=2.0)
+            raise SkipAction()
+
+        prompt.editor.insert_text(text)
+        self.set_focus(prompt.editor)
+        self.notify(f"Pasted from {source} ({len(text)} chars).", timeout=2.0)
 
     def _copyable_text(self) -> str:
+        text, _ = self._copyable_text_with_source()
+        return text
+
+    def _copyable_text_with_source(self) -> tuple[str, str]:
         try:
             selected = self.screen.get_selected_text()
         except Exception:
             selected = None
         if selected:
-            return selected
+            return selected, "selection"
 
         focused = self.focused
-        if focused is None:
-            return ""
+        if focused is not None:
+            selected_text = getattr(focused, "selected_text", None)
+            if isinstance(selected_text, str) and selected_text:
+                return selected_text, "selection"
 
-        selected_text = getattr(focused, "selected_text", None)
-        if isinstance(selected_text, str) and selected_text:
-            return selected_text
+            text_buffer = getattr(focused, "text_buffer", None)
+            if callable(text_buffer):
+                value = str(text_buffer()).strip()
+                if value:
+                    return value, "focused message"
 
-        text_buffer = getattr(focused, "text_buffer", None)
-        if callable(text_buffer):
-            return str(text_buffer()).strip()
-
-        render = getattr(focused, "render", None)
-        if callable(render):
-            return str(render()).strip()
-        return ""
+        # Fallback: copy the most recent assistant message so Ctrl+C is useful
+        # even when no widget is focused (common after assistant reply lands).
+        try:
+            from app.tui.conversation import AssistantMessageBlock
+            pane = self.query_one("#conversation", ConversationPane)
+            blocks = [b for b in pane.query(AssistantMessageBlock)]
+            if not blocks:
+                blocks = [b for b in getattr(pane, "_blocks", []) if isinstance(b, AssistantMessageBlock)]
+            if blocks:
+                value = str(blocks[-1].text_buffer()).strip()
+                if value:
+                    return value, "last assistant reply"
+        except Exception:  # noqa: BLE001
+            pass
+        return "", ""
 
     async def action_upload_files(self) -> None:
         def _after(_result) -> None:

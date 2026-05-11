@@ -88,6 +88,7 @@ class ExecutionEnvelope(BaseModel):
     artifact_refs: list[str] = Field(default_factory=list)
     execution_metadata: dict[str, Any] = Field(default_factory=dict)
     failure_kind: FailureKind
+    failure_summary: str | None = None
 
 
 class StepTaskHandle(BaseModel):

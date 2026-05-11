@@ -220,7 +220,7 @@ async def test_approval_required_terminates_loop(tmp_path, workspace):
                 "goal": "count rows",
                 "steps": [{
                     "purpose": "count",
-                    "code": "print(1)",
+                    "code": "from pathlib import Path\nPath('result.txt').write_text('1')\nprint(1)",
                     "declared_inputs": [],
                     "expected_outputs": ["result.txt"],
                 }],
