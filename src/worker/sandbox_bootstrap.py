@@ -14,7 +14,7 @@ except ImportError:
 
 NETWORK_MODULES = frozenset({"socket", "urllib", "http", "requests"})
 SHELL_MODULES = frozenset({"subprocess", "pty", "shlex"})
-STDLIB_ALLOWLIST = frozenset({"pathlib", "json", "csv", "math", "statistics", "time"})
+STDLIB_ALLOWLIST = frozenset({"pathlib", "json", "csv", "_csv", "math", "statistics", "time"})
 CODE_SUFFIXES = frozenset({".py", ".pyc", ".so", ".pyd", ".dll", ".dylib"})
 BLOCKED_AUDIT_EVENTS = frozenset({"socket.__new__", "subprocess.Popen", "os.system"})
 WRITE_OPEN_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND

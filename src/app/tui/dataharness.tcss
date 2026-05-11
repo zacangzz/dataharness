@@ -122,8 +122,26 @@ Screen {
     width: 100%;
 }
 
+.message-compaction {
+    margin: 1 0 0 0;
+    padding: 0 1;
+    color: $text-muted;
+    border-left: solid $secondary;
+    width: 100%;
+}
+
+.message-doctor {
+    margin: 1 0 0 0;
+    padding: 0 1;
+    color: $success;
+    border-left: solid $success;
+    width: 100%;
+}
+
 .message-user:focus,
-.message-assistant:focus {
+.message-assistant:focus,
+.message-compaction:focus,
+.message-doctor:focus {
     border-left: thick $accent;
     background: $boost;
 }

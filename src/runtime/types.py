@@ -15,7 +15,8 @@ class RuntimeMessage(BaseModel):
 class RuntimeRequest(BaseModel):
     messages: list[RuntimeMessage]
     max_completion_tokens: int
-    temperature: float = 0.2
+    temperature: float = 1.0
+    top_k: int = 64
     top_p: float = 0.95
     stop: list[str] = Field(default_factory=list)
     tools: list[dict[str, Any]] = Field(default_factory=list)

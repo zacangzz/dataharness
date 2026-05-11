@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import shutil
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -437,7 +438,10 @@ class ChatCompactor:
                     replaced_turn_count=replaced, token_estimate=token_est,
                 )
                 yield "completed"
-            except Exception:
+            except Exception as exc:
+                logging.getLogger("harness.compactor").exception(
+                    "compactor failed for chat %s: %s", chat_id, exc,
+                )
                 yield "failed"
 
     async def _summarize_via_runtime(self, older: list[ChatMessage]) -> str:

@@ -42,6 +42,13 @@ from observability.events import EventKind, Layer
 DataAnalysisAppSession = AppSession
 
 
+_YES_TOKENS = {"y", "yes", "yeah", "yep", "yup", "apply", "ok", "okay", "go", "do it", "sure"}
+
+
+def _parse_yes(text: str) -> bool:
+    return text.strip().lower() in _YES_TOKENS
+
+
 class DataHarnessApp(App[None]):
     TITLE = "DataHarness"
     CSS_PATH = Path(__file__).with_name("dataharness.tcss")
@@ -80,6 +87,7 @@ class DataHarnessApp(App[None]):
             workspace_id=self._workspace_dir.name, active_agent_mode="interaction"
         )
         self._active_chat_id: str | None = None
+        self._pending_doctor_report_id: str | None = None
         self._trace = RunTrace()
         self._run_state_text = str(self._state.state)
         self._active_mode_text = self._state.active_agent_mode
@@ -336,6 +344,10 @@ class DataHarnessApp(App[None]):
             "AppCommandCompleted": self._handle_command_completed,
             "AppDoctorFinding": self._handle_doctor_finding,
             "AppDoctorReportReady": self._handle_doctor_report_ready,
+            "AppDoctorNarrationReady": self._handle_doctor_narration_ready,
+            "AppDoctorApprovalRequested": self._handle_doctor_approval_requested,
+            "AppDoctorActionsApplied": self._handle_doctor_actions_applied,
+            "AppChatHistoryCompacted": self._handle_chat_history_compacted,
             "AppStatusChanged": self._handle_status_changed,
             "AppChatHistoryLoaded": lambda e: None,
         })
@@ -430,11 +442,81 @@ class DataHarnessApp(App[None]):
 
     def _handle_doctor_finding(self, event) -> None:
         self.query_one("#sidebar", SidebarPane).append_doctor_finding(event.summary, event.severity)
+        if event.severity == "info":
+            return
+        try:
+            self.query_one("#conversation", ConversationPane).append_doctor_line(
+                f"[doctor:{event.severity}] {event.summary}"
+            )
+        except Exception:
+            pass
 
     def _handle_doctor_report_ready(self, event) -> None:
         self.query_one("#sidebar", SidebarPane).doctor_report(
             event.summary_counts, event.recommendations
         )
+
+    def _handle_doctor_narration_ready(self, event) -> None:
+        try:
+            self.query_one("#conversation", ConversationPane).append_doctor_block(event.narration_text)
+        except Exception:
+            pass
+
+    def _handle_doctor_approval_requested(self, event) -> None:
+        self._pending_doctor_report_id = event.report_id
+        question = event.question or "Apply all proposed actions? (yes / no)"
+        self.show_clarification_prompt(question)
+
+    def _handle_doctor_actions_applied(self, event) -> None:
+        text = (
+            f"Doctor cleanup complete. Applied {event.applied_count} action(s); "
+            f"skipped {event.skipped_count}."
+        )
+        try:
+            self.query_one("#conversation", ConversationPane).append_doctor_block(text)
+        except Exception:
+            pass
+        try:
+            self.query_one("#sidebar", SidebarPane).append_doctor_finding(text, "info")
+        except Exception:
+            pass
+
+    def _handle_chat_history_compacted(self, event) -> None:
+        if event.status == "failed":
+            try:
+                self.query_one("#conversation", ConversationPane).append_failure(
+                    "compaction failed; see harness.compactor log", "compact_failed",
+                )
+            except Exception:
+                pass
+            return
+        if event.status != "completed":
+            return
+        if event.chat_id and event.chat_id != self._active_chat_id:
+            return
+        if not event.replaced_turn_count:
+            try:
+                self.query_one("#conversation", ConversationPane).append_doctor_line(
+                    f"[compact] no-op (chat has ≤ {8} active turns; nothing to summarize)",
+                )
+            except Exception:
+                pass
+            return
+        self.run_worker(self._rehydrate_active_chat())
+
+    async def _rehydrate_active_chat(self) -> None:
+        chat_id = self._active_chat_id
+        if not chat_id:
+            return
+        try:
+            record = await self._session.view_chat(chat_id)
+        except Exception:
+            return
+        try:
+            pane = self.query_one("#conversation", ConversationPane)
+        except Exception:
+            return
+        pane.rehydrate_from_record(record)
 
     def apply_workspace_snapshot(self, snapshot) -> None:
         if not isinstance(snapshot, dict):
@@ -715,7 +797,27 @@ class DataHarnessApp(App[None]):
             self.query_one("#clarification_bar", ClarificationBar).hide()
         except Exception:
             pass
+        if self._pending_doctor_report_id is not None:
+            report_id = self._pending_doctor_report_id
+            self._pending_doctor_report_id = None
+            decision = "yes" if _parse_yes(text) else "no"
+            self.run_worker(self._stream_doctor_approval(report_id, decision))
+            return
         self.run_worker(self._stream_clarification(text))
+
+    async def _stream_doctor_approval(self, report_id: str, decision: str) -> None:
+        consumer = self._build_consumer()
+        try:
+            async for ev in self._session.handle_doctor_approval(
+                state=self._state,
+                workspace_dir=self._workspace_dir,
+                report_id=report_id,
+                decision=decision,
+            ):
+                consumer.dispatch(ev)
+        except Exception as exc:
+            self._emit_error(phase="doctor_approval", exc=exc)
+            self.notify(str(exc), severity="error")
 
     async def _stream_clarification(self, text: str) -> None:
         consumer = self._build_consumer()

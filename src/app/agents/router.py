@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Callable
 
 from pydantic import BaseModel
@@ -41,6 +42,15 @@ class AgentModeRouter:
         "rank", "percent", "percentage", "ratio", "trend", "distribution",
         "histogram",
     }
+    transformation_terms = {
+        "add", "derive", "derived", "transform", "transformed", "normalize",
+        "normalized", "encode", "bucket", "map", "join", "merge", "flag",
+        "classify", "column", "columns", "field", "fields", "lookup", "enrich",
+        "one", "hot", "moving", "rolling", "lag", "lead", "cumulative",
+    }
+    workspace_reference_patterns = (
+        ".csv", ".tsv", ".parquet", ".xlsx", ".xls", "data/", "@data/",
+    )
     analysis_phrases = (
         "how many", "how much", "number of", "breakdown of", "rate of",
         "share of", "what percent", "what percentage",
@@ -55,14 +65,18 @@ class AgentModeRouter:
 
     def route(self, user_text: str) -> AgentModeRequest:
         normalized = user_text.lower()
-        words = set(normalized.replace("?", " ").replace(",", " ").split())
+        words = {w for w in re.split(r"[^a-z0-9_]+", normalized) if w}
 
         if words & self.knowledge_terms:
             decision = AgentModeRequest(mode="knowledge", reason="knowledge_capture_intent")
             self._emit_decision(decision, user_text)
             return decision
 
-        if words & self.analysis_terms or self._phrase_match(normalized):
+        if (
+            words & self.analysis_terms
+            or self._phrase_match(normalized)
+            or self._transformation_match(normalized, words)
+        ):
             decision = AgentModeRequest(mode="analyst", reason="analysis_intent")
             self._emit_decision(decision, user_text)
             return decision
@@ -79,6 +93,20 @@ class AgentModeRouter:
 
     def _phrase_match(self, normalized: str) -> bool:
         return any(phrase in normalized for phrase in self.analysis_phrases)
+
+    def _transformation_match(self, normalized: str, words: set[str]) -> bool:
+        if not (words & self.transformation_terms):
+            return False
+        has_workspace_ref = any(pattern in normalized for pattern in self.workspace_reference_patterns)
+        has_column_language = bool(words & {"column", "columns", "field", "fields"})
+        has_rule_language = bool(words & {
+            "derive", "derived", "transform", "transformed", "normalize", "normalized",
+            "encode", "bucket", "map", "join", "merge", "flag", "classify", "lookup",
+            "enrich", "moving", "rolling", "lag", "lead", "cumulative",
+        })
+        one_hot = {"one", "hot"} <= words
+        min_max = {"min", "max"} <= words and bool(words & {"normalize", "normalized"})
+        return has_workspace_ref or has_column_language or has_rule_language or one_hot or min_max
 
     def _classify_with_llm(self, user_text: str) -> str | None:
         if not self.enable_llm_classifier or self.llm_classifier is None:

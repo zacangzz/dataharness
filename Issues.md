@@ -1,5 +1,16 @@
 # Collection of Outstanding Issues
 
+## Runtime `enable_reasoning_stream` flag is not enforced (OPEN 2026-05-12)
+- Observed while checking Gemma 4 Layer 1 runtime settings: `RuntimeConfig.enable_reasoning_stream` defaults to `True` and is asserted in `tests/runtime/test_config.py`, but `src/runtime/llama_cpp_runtime.py` does not read the flag.
+- Current behavior always emits `reasoning_delta` when llama.cpp provides `delta["reasoning_content"]`, and always parses Gemma `<|think|>...</|think|>` blocks through `split_gemma_think_text`, regardless of the config value.
+- Suggested fix: either remove the unused setting if reasoning streaming is always intended, or make `emit_content_events`/`_sync_event_iterator` honor the flag and add tests for both enabled and disabled behavior.
+
+## Reasoning deltas are not consumed by a reasoning-aware app path (OPEN 2026-05-12)
+- Observed while tracing the v1 spec reasoning requirement: Layer 1 emits `RuntimeEvent(type="reasoning_delta")`, Layer 3 maps it to `RuntimeDelta(delta_type="reasoning")`, and Layer 4 maps it to `AppRuntimeDelta(delta_type="reasoning")`.
+- No harness decision path, prompt-package record path, provenance path, or persistence path consumes reasoning as reasoning. `PromptPackage.reasoning_capture_policy` exists in `src/harness/control.py`, but the active app prompt package type in `src/app/agents/types.py` has no corresponding field.
+- The TUI handler sends every `AppRuntimeDelta` to `ConversationPane.append_assistant_delta`, and that method appends `event.text` without checking `delta_type`; reasoning text can therefore appear temporarily as assistant stream text until `FinalMessage` overwrites the block.
+- Suggested fix: define the policy first. Either suppress/drop reasoning deltas outside trace telemetry, or add an explicit reasoning sink that is not persisted as assistant answer text and is gated by a real prompt-package/runtime policy.
+
 ## Packaged worker subprocess launches TUI and times out (RESOLVED 2026-05-11)
 - Observed in latest packaged run `dist/chats/w_0001/chat_f6e9bc91d1c0/messages.jsonl`: user asked `calculate sum of amount in sales`; the generated step was trivial pandas/pathlib code, but Layer 2 reported `execution timed out`.
 - Worker telemetry showed the subprocess command was `dist/dataharness -m worker.sandbox_bootstrap <sandbox_config>`, followed 60 seconds later by timeout telemetry. In the prior implementation, `src/cli.py` ignored unknown `-m` args via `parse_known_args()` and built the TUI, so the child process never ran the sandbox bootstrap.

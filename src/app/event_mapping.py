@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 from app.events import (
-    AppApprovalRequired, AppChatHistoryLoaded, AppCommandCompleted,
-    AppCommandProgress, AppCommandStarted, AppDoctorFinding,
-    AppDoctorReportReady, AppEvent, AppFinalMessage, AppModeHandoff,
+    AppApprovalRequired, AppChatHistoryCompacted, AppChatHistoryLoaded,
+    AppCommandCompleted, AppCommandProgress, AppCommandStarted,
+    AppDoctorActionsApplied, AppDoctorApprovalRequested,
+    AppDoctorFinding, AppDoctorNarrationReady, AppDoctorReportReady,
+    AppEvent, AppFinalMessage, AppModeHandoff,
     AppRaw, AppRuntimeDelta, AppStatusChanged, AppToolCallExecuted,
     AppTurnCancelled, AppTurnPaused, AppTurnFailed, AppTurnStarted,
 )
 from harness.events import (
-    ApprovalRequired, ChatHistoryLoaded, CommandCompleted, CommandProgress,
-    CommandStarted, DoctorFinding, DoctorReportReady, FinalMessage, HarnessEvent,
+    ApprovalRequired, ChatHistoryCompacted, ChatHistoryLoaded,
+    CommandCompleted, CommandProgress, CommandStarted,
+    DoctorActionsApplied, DoctorApprovalRequested,
+    DoctorFinding, DoctorNarrationReady, DoctorReportReady,
+    FinalMessage, HarnessEvent,
     ModeHandoffAccepted, RuntimeDelta, StatusChanged, ToolCallExecuted,
     TurnCancelled, TurnFailed, TurnPaused, TurnStarted,
 )
@@ -63,5 +68,27 @@ def to_app_event(ev: HarnessEvent) -> AppEvent:
         return AppDoctorReportReady(
             **base, report_id=ev.report_id, summary_counts=ev.summary_counts,
             recommendations=ev.recommendations,
+        )
+    if isinstance(ev, DoctorNarrationReady):
+        return AppDoctorNarrationReady(
+            **base, report_id=ev.report_id, narration_text=ev.narration_text,
+            action_summaries=ev.action_summaries,
+        )
+    if isinstance(ev, DoctorApprovalRequested):
+        return AppDoctorApprovalRequested(
+            **base, report_id=ev.report_id, question=ev.question,
+            action_count=ev.action_count,
+        )
+    if isinstance(ev, DoctorActionsApplied):
+        return AppDoctorActionsApplied(
+            **base, report_id=ev.report_id, applied_count=ev.applied_count,
+            skipped_count=ev.skipped_count, details=ev.details,
+        )
+    if isinstance(ev, ChatHistoryCompacted):
+        return AppChatHistoryCompacted(
+            **base, status=ev.status,
+            summary_token_estimate=ev.summary_token_estimate,
+            replaced_turn_count=ev.replaced_turn_count,
+            compaction_count=ev.compaction_count,
         )
     return AppRaw(**base, harness_event_name=ev.event_name, payload=ev.model_dump(mode="json"))

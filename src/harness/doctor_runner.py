@@ -6,11 +6,16 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import uuid4
 
+from typing import TYPE_CHECKING
+
 from harness.doctor import Doctor
 from harness.events import (
     CommandCompleted, CommandProgress, CommandStarted, DoctorActionProposed,
     DoctorFinding, DoctorReportReady, DoctorStarted, HarnessEvent,
 )
+
+if TYPE_CHECKING:
+    from harness.persistence import HarnessPersistence
 
 
 PHASES = (
@@ -24,8 +29,9 @@ PHASES = (
 
 
 class DoctorRunner:
-    def __init__(self, doctor: Doctor | None = None) -> None:
+    def __init__(self, doctor: Doctor | None = None, persistence: "HarnessPersistence | None" = None) -> None:
         self.doctor = doctor or Doctor()
+        self.persistence = persistence
 
     async def run(
         self,
@@ -74,6 +80,14 @@ class DoctorRunner:
         }
         recommendations = [a.rationale for a in all_actions]
         action_records = [a.model_dump(mode="json") for a in all_actions]
+        tmp_action_rows = self._persist_report(
+            report_id=report_id, workspace_id=workspace_id,
+            workspace_dir=workspace_dir, trigger=trigger,
+            findings_by_phase=findings_by_phase, actions_by_phase=actions_by_phase,
+            recommendations=recommendations,
+        )
+        if tmp_action_rows:
+            action_records = tmp_action_rows
         yield DoctorReportReady(
             ts=datetime.now(UTC), workspace_id=workspace_id, chat_id=chat_id, run_id=run_id,
             report_id=report_id, summary_counts=summary_counts,
@@ -165,3 +179,53 @@ class DoctorRunner:
             return json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return {}
+
+    def _persist_report(
+        self,
+        *,
+        report_id: str,
+        workspace_id: str,
+        workspace_dir: Path,
+        trigger: str,
+        findings_by_phase: dict,
+        actions_by_phase: dict,
+        recommendations: list[str],
+    ) -> list[dict]:
+        if self.persistence is None:
+            return []
+        from harness.control import DoctorReport, TmpAction
+        tmp_dir = workspace_dir / "artifacts" / "tmp"
+        items = sorted(p for p in tmp_dir.rglob("*") if p.is_file()) if tmp_dir.exists() else []
+        live_refs, promote_map = self._classify_tmp_items(items)
+        tmp_review = self.doctor.review_tmp_items(
+            items, trigger_context="doctor_runner",
+            live_refs=live_refs, promote_map=promote_map,
+        )
+        report_record = DoctorReport(
+            id=report_id,
+            workspace_id=workspace_id,
+            status="ok",
+            trigger=trigger,
+            source_findings=[f.model_dump(mode="json") for f in findings_by_phase.get("scan_sources", [])],
+            validity_changes=[f.model_dump(mode="json") for f in findings_by_phase.get("review_validity", [])],
+            lineage_findings=[f.model_dump(mode="json") for f in findings_by_phase.get("review_lineage", [])],
+            tmp_review=list(tmp_review["tmp_review"]),
+            tmp_actions=list(tmp_review["tmp_actions"]),
+            recommendations=list(recommendations),
+        )
+        self.persistence.save_model("doctor_history", "id", report_record.id, report_record)
+        rows: list[dict] = []
+        for action in tmp_review["tmp_actions"]:
+            tmp_action = TmpAction(
+                workspace_id=workspace_id,
+                doctor_report_id=report_record.id,
+                item_path=str(action["item_path"]),
+                action=str(action["action"]),
+                destination_path=action.get("destination_path"),
+                reason=str(action["reason"]),
+                decision_source=str(action["decision_source"]),
+                applied=bool(action["applied"]),
+            )
+            self.persistence.save_model("tmp_actions", "id", tmp_action.id, tmp_action)
+            rows.append(tmp_action.model_dump(mode="json"))
+        return rows

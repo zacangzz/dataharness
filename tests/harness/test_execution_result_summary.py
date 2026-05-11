@@ -109,6 +109,32 @@ async def test_resume_approved_step_summarizes_successful_result_file(tmp_path: 
     )
 
 
+async def test_resume_approved_step_prefers_result_summary_and_cites_transformed_csv(tmp_path: Path):
+    step_dir = tmp_path / "artifacts" / "tmp" / "run_test" / "step_1"
+    step_dir.mkdir(parents=True)
+    transformed = step_dir / "transformed_sales.csv"
+    result_file = step_dir / "result.txt"
+    transformed.write_text("amount,units,revenue_per_unit\n10,2,5\n", encoding="utf-8")
+    result_file.write_text(
+        "Added revenue_per_unit.\n\n"
+        "| amount | units | revenue_per_unit |\n"
+        "| --- | --- | --- |\n"
+        "| 10 | 2 | 5 |",
+        encoding="utf-8",
+    )
+
+    events = await _approved_events(
+        tmp_path,
+        _envelope(tmp_path, "completed", artifacts=[transformed, result_file]),
+    )
+
+    final = next(e for e in events if e.event_name == "FinalMessage")
+    assert "Analysis complete: Added revenue_per_unit." in final.text
+    assert "| amount | units | revenue_per_unit |" in final.text
+    assert f"Artifact: {result_file}" in final.text
+    assert f"Artifact: {transformed}" in final.text
+
+
 async def test_resume_approved_step_reports_worker_failure(tmp_path: Path):
     events = await _approved_events(
         tmp_path,

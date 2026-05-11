@@ -15,6 +15,7 @@ Issue with risk averse companies: extremely slow and overzealous protection agai
 ### Next Steps
 - improve conversational capabilities
 - improve UI/UX
+- fix: /compact, /doctor
 
 ## What did I learn from this experience?
 

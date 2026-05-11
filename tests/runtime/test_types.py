@@ -23,7 +23,8 @@ def test_runtime_request_defaults():
         max_completion_tokens=128,
         request_id="req_1",
     )
-    assert r.temperature == 0.2
+    assert r.temperature == 1.0
+    assert r.top_k == 64
     assert r.top_p == 0.95
     assert r.stop == []
     assert r.tools == []

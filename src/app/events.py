@@ -128,6 +128,36 @@ class AppDoctorReportReady(AppEvent):
     recommendations: list[str] = Field(default_factory=list)
 
 
+class AppChatHistoryCompacted(AppEvent):
+    event_name: Literal["AppChatHistoryCompacted"] = "AppChatHistoryCompacted"
+    status: Literal["queued", "running", "completed", "failed"]
+    summary_token_estimate: int | None = None
+    replaced_turn_count: int | None = None
+    compaction_count: int = 0
+
+
+class AppDoctorNarrationReady(AppEvent):
+    event_name: Literal["AppDoctorNarrationReady"] = "AppDoctorNarrationReady"
+    report_id: str
+    narration_text: str
+    action_summaries: list[str] = Field(default_factory=list)
+
+
+class AppDoctorApprovalRequested(AppEvent):
+    event_name: Literal["AppDoctorApprovalRequested"] = "AppDoctorApprovalRequested"
+    report_id: str
+    question: str
+    action_count: int
+
+
+class AppDoctorActionsApplied(AppEvent):
+    event_name: Literal["AppDoctorActionsApplied"] = "AppDoctorActionsApplied"
+    report_id: str
+    applied_count: int
+    skipped_count: int
+    details: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class AppRaw(AppEvent):
     """Catch-all for events we don't yet map specifically."""
     event_name: Literal["AppRaw"] = "AppRaw"

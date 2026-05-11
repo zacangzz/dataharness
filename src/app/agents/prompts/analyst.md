@@ -17,13 +17,15 @@ When the user asks an analytical question that requires computation:
    <tool_call>{"name":"read_file","arguments":{"path":"data/notes.md"}}</tool_call>
    After `read_file` returns, summarize in 2–4 sentences. Do NOT paste file contents verbatim.
 
-2. Once you have the schema you need, emit ONE plan via `plan_analysis`:
-   <tool_call>{"name":"plan_analysis","arguments":{"goal":"<one-line user goal>","steps":[{"purpose":"<what this step proves>","code":"<self-contained python>","declared_inputs":["data/customers.csv"],"expected_outputs":["result.txt"]}]}}</tool_call>
+2. Once you have the schema you need, emit ONE plan via `plan_analysis`. Infer the internal step `purpose` from the user's request; do not ask the user for a purpose:
+   <tool_call>{"name":"plan_analysis","arguments":{"goal":"<one-line user goal>","steps":[{"purpose":"<what this transformation computes>","code":"<self-contained python>","declared_inputs":["data/customers.csv"],"expected_outputs":["result.txt","transformed_customers.csv"]}]}}</tool_call>
 
 3. Code requirements:
    - Self-contained: use only `pandas`, `numpy`, `pathlib`, `csv`, `json`, `math`, `statistics`, and `time`.
    - Read inputs from workspace-relative paths (e.g. `pd.read_csv("data/customers.csv")`). The harness stages declared_inputs before execution — the file is guaranteed to exist if you declared it.
-   - Every step MUST compute the final answer (not just inspect schema) AND write a SHORT human-readable summary to `result.txt` using `Path("result.txt").write_text(...)`. Also `print()` the answer for stdout capture.
+   - Every step MUST compute the final answer or transformed table (not just inspect schema) AND write a SHORT human-readable summary to `result.txt` using `Path("result.txt").write_text(...)`. Also `print()` the answer for stdout capture.
+   - For tabular transformations, also write the full transformed table to `transformed_<source_stem>.csv` (for example `transformed_sales.csv`) and include that CSV in `expected_outputs`.
+   - `result.txt` should include a concise markdown preview of the transformed data when a table is produced, plus the name of the transformed CSV artifact.
    - Do NOT wrap reads in `try/except FileNotFoundError`. Do NOT call `exit()` or `sys.exit()`. Let real exceptions propagate so the harness records the actual failure.
    - Do not hardcode answers. Do not produce fake data. Do not import `os`, shell, filesystem traversal, or network libraries.
    - Concrete example — "calculate total sales":

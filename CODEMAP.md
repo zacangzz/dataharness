@@ -438,9 +438,10 @@ Re-exports `PromptPackageRegistry`, `AgentModeRouter`.
 - **var** `AgentModeDecision = AgentModeRequest`
 - **class** `AgentModeRouter` — keyword-based mode classifier
   - `request_mode` (alias of `route`)
-  - `route(user_text) -> AgentModeRequest` — tokenize, match against `analysis_terms`/`knowledge_terms`, default to `interaction`
+  - `route(user_text) -> AgentModeRequest` — punctuation-normalizing tokenize, match against `analysis_terms`/`transformation_terms`/`knowledge_terms`, default to `interaction`
+  - `_phrase_match(normalized)`, `_transformation_match(normalized, words)` — detect analytical phrases and workspace/column/rule transformation intent
   - `_emit_decision(decision, user_text)` — telemetry
-- **var** `analysis_terms` / `knowledge_terms` — keyword sets
+- **var** `analysis_terms` / `transformation_terms` / `workspace_reference_patterns` / `knowledge_terms` — keyword and data-reference sets
 **Notes:** stateless; called by `AppSession.run_user_turn`
 
 ### `src/app/agents/prompt_packages.py`
@@ -892,6 +893,10 @@ Re-exports `HarnessCommandRegistry`.
 **Defines:**
 - **func** `_sanitize_assistant_text(text)` — strips leaked assistant draft and Gemma turn markers before chat persistence
 - **func** `_summarize_step_execution(workspace_dir, envelope)` — status-aware final message for worker results/failures
+- **func** `_is_repairable_plan_analysis_error(message)` — classifies plan schema/field validation errors that merit one internal repair retry
+- **func** `_workspace_schema_snapshot(workspace_dir)` — compact JSON-lines schema context for plan repair prompts
+- **func** `_build_plan_analysis_repair_prompt(...)` — strict retry prompt for malformed `plan_analysis` tool calls
+- **func** `_plan_analysis_no_code_message(validation_error)` — final no-code-ran user message after repeated invalid plans
 - **func** `_read_workspace_file(...)` — raw Layer-3 workspace text read with boundary and size caps
 - **class** `Orchestrator`
   - `_register_commands` (built-ins: doctor, compact, help, cancel_run, memory_review, inspect_artifact, provenance_inspect, validity_inspect, mark_result_trusted, mark_result_invalidated, challenge_conclusion, stop_after_current_step, revise_goal, retry_step, rerun_step, chat ops, workspace ops). All Layer 3 commands now available; no stubs remain.
@@ -908,7 +913,7 @@ Re-exports `HarnessCommandRegistry`.
   - **run lock:** `_acquire_run(run_id)` raises `RunAlreadyActive`; `_release_run`
   - **chat ops:** `create_chat`, `list_chats`, `view_chat`, `delete_chat`, `resume_chat`, `compact_chat_history`
   - **turn:** `run_turn(state, *, workspace_dir, chat_id, user_input, requested_mode, prompt_text, durable_context="") -> AsyncIterator[HarnessEvent]` — single-stream; emits `TurnPaused`/`TurnFailed(empty_output)` instead of hollow asg_ rows
-  - **agentic turn:** `run_agentic_turn(state, *, workspace_dir, chat_id, user_input, requested_mode, prompt_provider, max_iterations=4) -> AsyncIterator[HarnessEvent]` — bounded multi-iteration loop: build durable context → run_turn → dispatch tool_calls → handle handoffs/retry → ApprovalRequired termination. Layer-3 owned per spec §6.3 / §8.1.
+  - **agentic turn:** `run_agentic_turn(state, *, workspace_dir, chat_id, user_input, requested_mode, prompt_provider, max_iterations=4) -> AsyncIterator[HarnessEvent]` — bounded multi-iteration loop: build durable context → run_turn → dispatch tool_calls → handle handoffs/empty-output/malformed-tool/plan-repair retry → ApprovalRequired termination. Layer-3 owned per spec §6.3 / §8.1.
   - **tool dispatch:** `_dispatch_tool_call(state, name, args) -> AsyncIterator[HarnessEvent]` — routes knowledge intents via `knowledge_intents.handle_knowledge_intent`, others via `registry.get_handler(name)`; re-yields handler events
   - **context block:** `_build_durable_context_block(workspace_id, workspace_dir) -> str`
   - `close`, `cancel_run(run_id, reason) -> TurnCancelled`
@@ -1059,7 +1064,7 @@ Re-exports `RuntimeConfig`, `auto_ctx_from_ram_gb` from `runtime.config`.
 ### `src/runtime/types.py`
 **Defines:**
 - **class** `RuntimeMessage(BaseModel)` — role/content/name/tool_call_id
-- **class** `RuntimeRequest(BaseModel)` — messages/max_completion_tokens/temperature=0.2/top_p=0.95/stop/tools/request_id/correlation_id
+- **class** `RuntimeRequest(BaseModel)` — messages/max_completion_tokens/temperature=1.0/top_k=64/top_p=0.95/stop/tools/request_id/correlation_id
 - **class** `RuntimeEvent(BaseModel)` — type/request_id/seq/text/tool_call/finish_reason/usage/error_code/error_message
 - **class** `TokenPressure(BaseModel)` — context_window/prompt_tokens/reserved_completion_tokens/total/pressure_ratio/over_threshold (>0.80)
 - **var** `RuntimeStatus = Literal["not_loaded","loading","ready","streaming","error"]`
@@ -1200,3 +1205,13 @@ Re-exports `PythonStepExecutor` (executor); `ExecutionEnvelope`, `ExecutionStatu
 3. `Orchestrator.run_turn` → `RuntimeRequestBuilder.build_messages` → `LlamaCppRuntime.stream`
 4. `RuntimeEvent`s flow back through `SyncToAsyncBridge` → wrapped as `HarnessEvent`s → `to_app_event` → `AppEvent`
 5. `EventConsumer.dispatch` → `DataHarnessApp._handle_*` → widget updates
+
+### Compact + Doctor (interactive cleanup flow)
+- New events (harness): `DoctorNarrationReady`, `DoctorApprovalRequested`, `DoctorActionsApplied` (`src/harness/events.py`).
+- New events (app): `AppChatHistoryCompacted`, `AppDoctorNarrationReady`, `AppDoctorApprovalRequested`, `AppDoctorActionsApplied` (`src/app/events.py`); all mapped in `src/app/event_mapping.py`.
+- `Orchestrator.apply_doctor_actions(report_id, decision, workspace_id, workspace_dir, chat_id)` reads `tmp_actions` rows, calls `Doctor.apply_tmp_action`, yields `DoctorActionsApplied`.
+- `DoctorRunner.__init__(doctor, persistence)` now persists `DoctorReport` + `TmpAction` rows during `run` (was previously sidebar-only).
+- `Orchestrator.compact_chat_history` now populates `replaced_turn_count` and `summary_token_estimate` on completed `ChatHistoryCompacted`.
+- `AppSession.handle_direct_command` post-processes `doctor` to call `_stream_doctor_narration_and_approval` (renders LLM narration via prompt `src/app/agents/prompts/doctor_narrator.md`).
+- `AppSession.handle_doctor_approval(state, workspace_dir, report_id, decision)` calls `Orchestrator.apply_doctor_actions`.
+- TUI: `ConversationPane.append_compaction`, `append_doctor_line`, `append_doctor_block` (`src/app/tui/widgets.py`); blocks `CompactionSummaryBlock`, `DoctorMessageBlock` (`src/app/tui/conversation.py`). Rehydrate renders `compacted_summary` role as `CompactionSummaryBlock`. New handlers in `DataHarnessApp`: `_handle_chat_history_compacted`, `_handle_doctor_narration_ready`, `_handle_doctor_approval_requested`, `_handle_doctor_actions_applied`. Clarification bar reused for doctor batch confirm via `_pending_doctor_report_id` + `_parse_yes` helper.

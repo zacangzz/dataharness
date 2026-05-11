@@ -157,6 +157,28 @@ class ChatHistoryCompacted(HarnessEvent):
     compaction_count: int = 0
 
 
+class DoctorNarrationReady(HarnessEvent):
+    event_name: Literal["DoctorNarrationReady"] = "DoctorNarrationReady"
+    report_id: str
+    narration_text: str
+    action_summaries: list[str] = Field(default_factory=list)
+
+
+class DoctorApprovalRequested(HarnessEvent):
+    event_name: Literal["DoctorApprovalRequested"] = "DoctorApprovalRequested"
+    report_id: str
+    question: str
+    action_count: int
+
+
+class DoctorActionsApplied(HarnessEvent):
+    event_name: Literal["DoctorActionsApplied"] = "DoctorActionsApplied"
+    report_id: str
+    applied_count: int
+    skipped_count: int
+    details: list[dict[str, Any]] = Field(default_factory=list)
+
+
 # --- commands ---
 
 class CommandStarted(HarnessEvent):

@@ -4,7 +4,10 @@ from collections import deque
 import json
 
 from app.tui.help import HelpData
-from app.tui.conversation import AssistantMessageBlock, SystemMessageBlock, UserMessageBlock
+from app.tui.conversation import (
+    AssistantMessageBlock, CompactionSummaryBlock, DoctorMessageBlock,
+    SystemMessageBlock, UserMessageBlock,
+)
 from app.tui.sidebar import SidebarState
 from app.tui.sidebar_sections import (
     ChatsSection,
@@ -112,6 +115,24 @@ class ConversationPane(VerticalScroll):
         self._safe_mount(block)
         self._safe_scroll_end()
 
+    def append_doctor_line(self, text: str) -> None:
+        block = DoctorMessageBlock(text)
+        self._blocks.append(block)
+        self._safe_mount(block)
+        self._safe_scroll_end()
+
+    def append_doctor_block(self, text: str) -> None:
+        block = DoctorMessageBlock(text)
+        self._blocks.append(block)
+        self._safe_mount(block)
+        self._safe_scroll_end()
+
+    def append_compaction(self, summary_text: str, *, replaced_turn_count: int | None = None) -> None:
+        block = CompactionSummaryBlock(summary_text, replaced_turn_count=replaced_turn_count)
+        self._blocks.append(block)
+        self._safe_mount(block)
+        self._safe_scroll_end()
+
     def discard_streaming(self) -> None:
         if self._streaming_block is not None:
             try:
@@ -148,6 +169,8 @@ class ConversationPane(VerticalScroll):
                 self.append_user(cleaned)
             elif message.role == "assistant":
                 self.append_assistant(cleaned)
+            elif message.role == "compacted_summary":
+                self.append_compaction(cleaned)
             else:
                 block = SystemMessageBlock(cleaned)
                 self._blocks.append(block)

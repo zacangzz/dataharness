@@ -104,3 +104,33 @@ class SystemMessageBlock(Static):
 
     def text_buffer(self) -> str:
         return self._text
+
+
+class CompactionSummaryBlock(Static):
+    can_focus = True
+
+    def __init__(self, summary_text: str, *, replaced_turn_count: int | None = None, **kwargs) -> None:
+        header = (
+            f"[compacted {replaced_turn_count} turns]"
+            if replaced_turn_count
+            else "[compacted earlier turns]"
+        )
+        body = f"{header}\n{summary_text}".strip()
+        super().__init__(body, markup=False, **kwargs)
+        self._text = body
+        self.add_class("message-compaction")
+
+    def text_buffer(self) -> str:
+        return self._text
+
+
+class DoctorMessageBlock(Static):
+    can_focus = True
+
+    def __init__(self, text: str, **kwargs) -> None:
+        super().__init__(text, markup=False, **kwargs)
+        self._text = text
+        self.add_class("message-doctor")
+
+    def text_buffer(self) -> str:
+        return self._text

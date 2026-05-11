@@ -18,7 +18,7 @@ from harness.command_registry import (
 )
 from harness.control import RunStateRecord
 from harness.events import (
-    ApprovalRequired, CommandCompleted, CommandStarted, HarnessEvent,
+    ApprovalRequired, CommandCompleted, CommandStarted, FinalMessage, HarnessEvent,
     ModeHandoffAccepted, ToolCallExecuted,
 )
 from harness.orchestrator import Orchestrator
@@ -236,6 +236,83 @@ async def test_approval_required_terminates_loop(tmp_path, workspace):
     assert approvals
     # Loop must terminate on approval — no second runtime call
     assert len(runtime.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_invalid_plan_analysis_is_repaired_once_internally(tmp_path, workspace):
+    runtime = FakeRuntime([
+        _Scenario(tool_calls=[{
+            "name": "plan_analysis",
+            "arguments": {
+                "goal": "add revenue per unit",
+                "steps": [{
+                    "code": "from pathlib import Path\nPath('result.txt').write_text('ok')",
+                    "declared_inputs": ["data/sales.csv"],
+                    "expected_outputs": ["result.txt"],
+                }],
+            },
+        }]),
+        _Scenario(tool_calls=[{
+            "name": "plan_analysis",
+            "arguments": {
+                "goal": "add revenue per unit",
+                "steps": [{
+                    "purpose": "Add revenue_per_unit from existing columns.",
+                    "code": "from pathlib import Path\nPath('result.txt').write_text('ok')",
+                    "declared_inputs": ["data/sales.csv"],
+                    "expected_outputs": ["result.txt"],
+                }],
+            },
+        }]),
+    ])
+    orch = Orchestrator(runtime=runtime, app_root=tmp_path)
+    events = [e async for e in orch.run_agentic_turn(
+        _state(), workspace_dir=workspace, chat_id="c1",
+        user_input="add revenue_per_unit to @data/sales.csv",
+        requested_mode="analyst", prompt_provider=_provider(),
+    )]
+
+    approvals = [e for e in events if isinstance(e, ApprovalRequired)]
+    assert approvals
+    assert len(runtime.calls) == 2
+    repair_prompt = runtime.calls[1].messages[-1].content
+    assert "STRICT PLAN_ANALYSIS REPAIR" in repair_prompt
+    assert "add revenue_per_unit to @data/sales.csv" in repair_prompt
+    assert "data/sales.csv" in repair_prompt
+    assert "derived column" in repair_prompt
+    assert "rolling calculation" in repair_prompt
+
+
+@pytest.mark.asyncio
+async def test_repeated_invalid_plan_analysis_reports_no_code_ran(tmp_path, workspace):
+    invalid_tool_call = {
+        "name": "plan_analysis",
+        "arguments": {
+            "goal": "add revenue per unit",
+            "steps": [{
+                "code": "from pathlib import Path\nPath('result.txt').write_text('ok')",
+                "declared_inputs": ["data/sales.csv"],
+                "expected_outputs": ["result.txt"],
+            }],
+        },
+    }
+    runtime = FakeRuntime([
+        _Scenario(tool_calls=[invalid_tool_call]),
+        _Scenario(tool_calls=[invalid_tool_call]),
+    ])
+    orch = Orchestrator(runtime=runtime, app_root=tmp_path)
+    events = [e async for e in orch.run_agentic_turn(
+        _state(), workspace_dir=workspace, chat_id="c1",
+        user_input="add revenue_per_unit to @data/sales.csv",
+        requested_mode="analyst", prompt_provider=_provider(),
+    )]
+
+    assert not [e for e in events if isinstance(e, ApprovalRequired)]
+    finals = [e for e in events if isinstance(e, FinalMessage)]
+    assert finals
+    assert "No code ran" in finals[-1].text
+    assert "'purpose' is required" in finals[-1].text
+    assert len(runtime.calls) == 2
 
 
 @pytest.mark.asyncio

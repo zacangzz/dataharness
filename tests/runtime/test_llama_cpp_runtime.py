@@ -26,6 +26,19 @@ def test_build_llama_kwargs_uses_runtime_config_values() -> None:
     assert kwargs["flash_attn"] is True
 
 
+def test_completion_kwargs_include_sampling_defaults() -> None:
+    runtime = LlamaCppRuntime.__new__(LlamaCppRuntime)
+    request = RuntimeRequest(
+        messages=[RuntimeMessage(role="user", content="hi")],
+        max_completion_tokens=128,
+        request_id="r1",
+    )
+    kwargs = runtime._completion_kwargs(request)
+    assert kwargs["temperature"] == 1.0
+    assert kwargs["top_k"] == 64
+    assert kwargs["top_p"] == 0.95
+
+
 async def test_runtime_exposes_token_pressure_report() -> None:
     cfg = RuntimeConfig(model_path="model.gguf", n_ctx=4096)
 

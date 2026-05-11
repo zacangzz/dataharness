@@ -124,4 +124,7 @@ async def test_doctor_emits_full_event_sequence(session, tmp_path):
     assert names[0] == "AppCommandStarted"
     assert any(n == "AppCommandProgress" for n in names)
     assert any(n == "AppDoctorReportReady" for n in names)
-    assert names[-1] == "AppCommandCompleted"
+    assert "AppCommandCompleted" in names
+    # session.handle_direct_command now appends narration + (optionally) approval/applied
+    # events after the harness command completes.
+    assert names[-1] in {"AppCommandCompleted", "AppDoctorNarrationReady", "AppDoctorActionsApplied", "AppDoctorApprovalRequested"}

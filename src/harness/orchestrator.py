@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime
@@ -25,7 +26,8 @@ from harness.doctor_runner import DoctorRunner
 from harness.events import (
     ApprovalRequired, ApprovalResolved, ArtifactsReady, ChatHistoryCompacted,
     ChatHistoryLoaded,
-    CommandCompleted, CommandStarted, FinalMessage, HarnessEvent, ModeActivated,
+    CommandCompleted, CommandStarted, DoctorActionsApplied, FinalMessage,
+    HarnessEvent, ModeActivated,
     PlanReady, PromptBuilt, RuntimeDelta, RuntimeStatusChanged, StatusChanged,
     ModeHandoffAccepted, StepCompleted, StepTaskStatusChanged, StepTaskSubmitted,
     ToolCallExecuted, TurnCancelled, TurnFailed, TurnPaused, TurnStarted,
@@ -119,15 +121,74 @@ def _summarize_step_execution(workspace_dir: Path, envelope) -> str:
         return f"Analysis failed during execution: {detail or status or 'unknown worker failure'}"
 
     if envelope.artifacts:
-        artifact = _artifact_path(workspace_dir, envelope.artifacts[0])
-        content = _read_short_text(artifact)
+        artifact_paths = [_artifact_path(workspace_dir, Path(artifact)) for artifact in envelope.artifacts]
+        summary_artifact = next((p for p in artifact_paths if p.name == "result.txt"), artifact_paths[0])
+        content = _read_short_text(summary_artifact)
+        artifact_lines = "\n".join(f"Artifact: {path}" for path in artifact_paths)
         if content:
-            return f"Analysis complete: {content}\n\nArtifact: {artifact}"
-        return f"Analysis complete. Artifact: {artifact}"
+            return f"Analysis complete: {content}\n\n{artifact_lines}"
+        return f"Analysis complete.\n\n{artifact_lines}"
     stdout = (envelope.stdout or "").strip()
     if stdout:
         return f"Analysis complete: {stdout}"
     return "Analysis complete."
+
+
+def _is_repairable_plan_analysis_error(message: str) -> bool:
+    lowered = message.lower()
+    return any(marker in lowered for marker in (
+        "purpose", "'code'", "code missing", "steps", "expected object",
+        "expected_outputs", "does not reference expected output", "declared_inputs",
+    ))
+
+
+def _workspace_schema_snapshot(workspace_dir: Path) -> str:
+    files = list_workspace_files(workspace_dir, max_entries=20)
+    if not files:
+        return "No workspace data files were discovered."
+    lines: list[str] = []
+    for item in files:
+        rel = str(item.get("path") or "")
+        suffix = Path(rel).suffix.lower()
+        if suffix in {".csv", ".tsv", ".parquet", ".xlsx", ".xls"}:
+            lines.append(json.dumps(read_file_schema(workspace_dir, rel), ensure_ascii=False, default=str))
+        else:
+            lines.append(json.dumps({"path": rel, "kind": "file"}, ensure_ascii=False))
+    return "\n".join(lines)
+
+
+def _build_plan_analysis_repair_prompt(
+    *,
+    original_request: str,
+    validation_error: str,
+    workspace_dir: Path,
+) -> str:
+    schemas = _workspace_schema_snapshot(workspace_dir)
+    return (
+        "STRICT PLAN_ANALYSIS REPAIR\n\n"
+        "Your previous `plan_analysis` tool call failed validation. No code ran.\n"
+        f"Original user request:\n{original_request}\n\n"
+        f"Internal validation error:\n{validation_error}\n\n"
+        f"Available file schemas:\n{schemas}\n\n"
+        "Emit exactly one corrected `plan_analysis` tool call. Do not ask the user for "
+        "internal fields; infer them from the request and schemas.\n\n"
+        "Required shape:\n"
+        "<tool_call>{\"name\":\"plan_analysis\",\"arguments\":{\"goal\":\"...\",\"steps\":[{\"purpose\":\"...\",\"code\":\"...\",\"declared_inputs\":[\"data/source.csv\"],\"expected_outputs\":[\"result.txt\",\"transformed_source.csv\"]}]}}</tool_call>\n\n"
+        "Examples to adapt:\n"
+        "- derived column: read a CSV, assign `df['revenue_per_unit'] = df['revenue'] / df['units']`, write `result.txt` and `transformed_sales.csv`.\n"
+        "- rolling calculation: use `df['amount_ma3'] = df['amount'].rolling(3, min_periods=1).mean()` and write both outputs.\n"
+        "- rule encoding: use `df['enterprise_flag'] = (df['plan'] == 'enterprise').astype(int)` and write both outputs.\n"
+        "- grouping: use user-provided rules or a mapping dict to create the grouped column, then write both outputs.\n\n"
+        "Use only allowed imports: pandas, numpy, pathlib, csv, json, math, statistics. "
+        "Every expected output filename must appear literally in the code."
+    )
+
+
+def _plan_analysis_no_code_message(validation_error: str) -> str:
+    return (
+        "No code ran. I could not build a valid execution plan after one internal "
+        f"repair attempt. Internal validation error: {validation_error}"
+    )
 
 
 class Orchestrator:
@@ -169,7 +230,7 @@ class Orchestrator:
         self._runtime_lock = asyncio.Lock()
         self.compactor: ChatCompactor | None = None
         self.workspace_manager = AsyncWorkspaceManager(app_root=self.app_root, chat_store=self.chat_store)
-        self.doctor_runner = DoctorRunner(self.doctor)
+        self.doctor_runner = DoctorRunner(self.doctor, persistence=self.persistence)
         self.registry = HarnessCommandRegistry()
         self._register_commands()
 
@@ -1159,19 +1220,71 @@ class Orchestrator:
         self, chat_id: str, reason: str = "user_requested",
     ) -> AsyncIterator[HarnessEvent]:
         rec = await self.chat_store.view_chat(chat_id)
+        prior_count = rec.compaction_count
         if self.compactor is None:
             self.compactor = ChatCompactor(
                 store=self.chat_store, runtime=self.runtime, runtime_lock=self._runtime_lock,
             )
         async for status in self.compactor.compact(chat_id, reason=reason):
             snapshot = await self.chat_store.view_chat(chat_id)
+            replaced = None
+            summary_tokens = None
+            if status == "completed" and snapshot.compaction_count > prior_count:
+                latest_summary = next(
+                    (m for m in reversed(snapshot.messages) if m.role == "compacted_summary"), None,
+                )
+                if latest_summary is not None:
+                    summary_tokens = latest_summary.token_estimate
+                replaced = max(0, rec.message_count - snapshot.message_count + 1)
             yield ChatHistoryCompacted(
                 ts=datetime.now(UTC), workspace_id=rec.workspace_id, chat_id=chat_id,
                 status=status,
-                summary_token_estimate=None,
-                replaced_turn_count=None,
+                summary_token_estimate=summary_tokens,
+                replaced_turn_count=replaced,
                 compaction_count=snapshot.compaction_count,
             )
+
+    async def apply_doctor_actions(
+        self, *, report_id: str, decision: str, workspace_id: str, workspace_dir: Path,
+        chat_id: str | None = None,
+    ) -> AsyncIterator[HarnessEvent]:
+        normalized = "yes" if str(decision).strip().lower() == "yes" else "no"
+        rows: list[dict[str, Any]] = []
+        if self.persistence is not None:
+            try:
+                all_actions = self.persistence.db.list_records("tmp_actions")
+                rows = [r for r in all_actions if r.get("doctor_report_id") == report_id]
+            except Exception:
+                rows = []
+        if normalized == "no":
+            yield DoctorActionsApplied(
+                ts=datetime.now(UTC), workspace_id=workspace_id, chat_id=chat_id, run_id=None,
+                report_id=report_id, applied_count=0, skipped_count=len(rows),
+                details=[{"id": r.get("id"), "action": r.get("action"), "applied": False} for r in rows],
+            )
+            return
+        applied_count = 0
+        skipped_count = 0
+        details: list[dict[str, Any]] = []
+        for record in rows:
+            if record.get("applied"):
+                skipped_count += 1
+                details.append({"id": record.get("id"), "action": record.get("action"), "applied": True, "note": "already_applied"})
+                continue
+            try:
+                updated = self.doctor.apply_tmp_action(record, workspace_dir=workspace_dir)
+                if self.persistence is not None:
+                    self.persistence.db.save_record("tmp_actions", "id", str(updated["id"]), updated)
+                applied_count += 1
+                details.append({"id": updated.get("id"), "action": updated.get("action"), "applied": True})
+            except Exception as exc:
+                skipped_count += 1
+                details.append({"id": record.get("id"), "action": record.get("action"), "applied": False, "error": str(exc)})
+        yield DoctorActionsApplied(
+            ts=datetime.now(UTC), workspace_id=workspace_id, chat_id=chat_id, run_id=None,
+            report_id=report_id, applied_count=applied_count, skipped_count=skipped_count,
+            details=details,
+        )
 
     # ---- agentic-turn intents ----
     _TERMINAL_INTENTS = frozenset({"answer_directly", "respond_to_user", "request_clarification"})
@@ -1208,6 +1321,7 @@ class Orchestrator:
         current_input = user_input
         retried_empty = False
         retried_malformed = False
+        retried_plan_repair = False
         handoff_used = False
         first_iter = True
 
@@ -1218,6 +1332,7 @@ class Orchestrator:
             empty_failed = False
             malformed_failed = False
             approval_pending = False
+            plan_analysis_error: str | None = None
 
             async for ev in self.run_turn(
                 state, workspace_dir=workspace_dir, chat_id=chat_id,
@@ -1280,6 +1395,13 @@ class Orchestrator:
                         yield sub_ev
                         if isinstance(sub_ev, CommandCompleted):
                             result = sub_ev.result
+                            if (
+                                name == "plan_analysis"
+                                and isinstance(result, dict)
+                                and result.get("error")
+                                and _is_repairable_plan_analysis_error(str(result.get("error")))
+                            ):
+                                plan_analysis_error = str(result.get("error"))
                         if isinstance(sub_ev, ApprovalRequired):
                             dispatch_approval = True
                     results.append((tc, result))
@@ -1290,6 +1412,24 @@ class Orchestrator:
                     )
                 if dispatch_approval:
                     return  # approval gate — wait for user via resume_approved_step
+                if plan_analysis_error:
+                    if not retried_plan_repair:
+                        retried_plan_repair = True
+                        current_input = _build_plan_analysis_repair_prompt(
+                            original_request=user_input,
+                            validation_error=plan_analysis_error,
+                            workspace_dir=workspace_dir,
+                        )
+                        first_iter = False
+                        continue
+                    yield FinalMessage(
+                        ts=datetime.now(UTC), workspace_id=state.workspace_id,
+                        chat_id=chat_id, run_id=state.run_id,
+                        assistant_message_id=f"asg_{uuid4().hex[:12]}",
+                        text=_plan_analysis_no_code_message(plan_analysis_error),
+                        usage={},
+                    )
+                    return
                 if terminal or not results:
                     return
                 current_input = self._format_tool_followup(final_text, results)

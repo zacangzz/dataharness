@@ -236,6 +236,7 @@ class LlamaCppRuntime:
         return {
             "messages": [m.model_dump(exclude_none=True) for m in request.messages],
             "temperature": request.temperature,
+            "top_k": request.top_k,
             "top_p": request.top_p,
             "max_tokens": request.max_completion_tokens,
             "stop": request.stop or None,

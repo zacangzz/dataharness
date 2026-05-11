@@ -19,6 +19,13 @@ def router(tmp_path):
     "show me the top 5 products",
     "number of rows in sales.csv",
     "compute median amount",
+    "add revenue_per_unit to @data/sales.csv",
+    "calculate a 3-row moving average of amount",
+    "encode plan as 1 for enterprise else 0",
+    "group customers into EU and non-EU",
+    "show me @data/sales.csv with a min-max normalized amount column",
+    "create one-hot columns for plan in data/customers.csv",
+    "join sales.csv with regions.csv by customer_id",
 ])
 def test_analyst_routing(router, text):
     assert router.route(text).mode == "analyst"
@@ -29,6 +36,7 @@ def test_analyst_routing(router, text):
     "what can you do",
     "tell me about the workspace",
     "list files",
+    "show @data/sales.csv",
 ])
 def test_interaction_routing(router, text):
     assert router.route(text).mode == "interaction"

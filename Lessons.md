@@ -1,5 +1,9 @@
 # Collection of Lesssons Learnt
 
+## Layer 1 runtime config flags must be audited against actual stream behavior
+- `RuntimeConfig.enable_reasoning_stream` currently exists as a defaulted config field, but `LlamaCppRuntime` does not read it; reasoning deltas from llama.cpp and Gemma `<|think|>` parsing are always active. Treat runtime config fields as untrusted until their call sites are confirmed.
+- The app currently relays reasoning as `RuntimeDelta/AppRuntimeDelta(delta_type="reasoning")`, but no consumer applies a reasoning-specific policy. `ConversationPane.append_assistant_delta` appends all delta text, so reasoning can leak into the transient assistant stream unless Layer 4 filters by `delta_type`.
+
 ## Packaged worker subprocesses must dispatch before TUI startup
 - In source mode, `PythonStepExecutor` can run `sys.executable -m worker.sandbox_bootstrap <config>`. In a PyInstaller onefile binary, `sys.executable` is `dist/dataharness`, so the same argv becomes `dist/dataharness -m worker.sandbox_bootstrap <config>`.
 - The CLI must intercept that private `-m worker.sandbox_bootstrap` target before normal argparse/TUI startup. If it falls through to `build_app()`, the child process launches the TUI and the parent worker eventually reports a misleading `execution timed out`.
@@ -251,3 +255,7 @@
 - Conservative literal-substring check (no AST walk): catches the actual failure mode (filename absent) without over-rejecting. Real code that writes to file X always mentions X in source.
 - Prompt hardening in `src/app/agents/prompts/analyst.md`: mandate compute+write (not inspection-only); forbid `try/except FileNotFoundError` defensive wrapping (harness stages inputs); forbid `exit()`/`sys.exit()`; added concrete "calculate total sales" example showing the expected idiom.
 - Tests updated: existing tests using `code="print(1)"` with `expected_outputs=["result.txt"]` now use compliant code (`Path('result.txt').write_text('1')`); new `test_plan_analysis_rejects_code_missing_expected_output` asserts the guard fires before `ApprovalRequired`.
+
+## Worker stdlib extension allowlists must include backing modules
+
+- When worker CSV code is allowed, include the stdlib extension module backing it too: `csv` imports `_csv`. Keep both `src/worker/policy.py` and `src/worker/sandbox_bootstrap.py` allowlists in sync with `_csv` so allowed CSV imports do not fail inside the runtime sandbox.
