@@ -12,6 +12,10 @@ Issue with risk averse companies: extremely slow and overzealous protection agai
 3. run the build script: ```scripts/build_app.sh```, script will build the app
 4. ./dist/dataharness
 
+### Next Steps
+- improve conversational capabilities
+- improve UI/UX
+
 ## What did I learn from this experience?
 
 - Patience
