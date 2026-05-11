@@ -32,7 +32,7 @@ class FailureKind(StrEnum):
 
 
 class ResourceLimits(BaseModel):
-    timeout_seconds: int = 60
+    timeout_seconds: int = 120
     memory_mb: int = 1024
     artifact_bytes: int = 100_000_000
     stdout_bytes: int = 5_000_000

@@ -46,7 +46,11 @@ class WorkspaceFileIndex:
             self._cache = []
             return []
         base = self.workspace_dir
-        for dirpath, dirnames, filenames in os.walk(base):
+        data_root = base / "data"
+        if not data_root.exists():
+            self._cache = []
+            return []
+        for dirpath, dirnames, filenames in os.walk(data_root):
             dirnames[:] = sorted(d for d in dirnames if not d.startswith(".") and d not in SKIPPED_DIRS)
             for name in sorted(filenames):
                 if name.startswith("."):

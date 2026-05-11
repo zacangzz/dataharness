@@ -67,17 +67,56 @@ def _estimate_tokens(text: str) -> int:
 
 
 class ChatStore:
-    """Workspace-scoped chat persistence under <app_root>/chats/<workspace_id>/<chat_id>/."""
+    """Workspace-scoped chat persistence under <app_root>/workspaces/<workspace_id>/chats/<chat_id>/."""
 
     def __init__(self, app_root: Path) -> None:
         self.app_root = app_root
-        self._chats_dir = app_root / "chats"
+        self._workspaces_dir = app_root / "workspaces"
         self._lock = asyncio.Lock()
         # Pending (lazy) chats not yet flushed to disk.
         self._pending: dict[str, ChatRecord] = {}
+        self._migrate_legacy_layout()
+
+    def _migrate_legacy_layout(self) -> None:
+        legacy = self.app_root / "chats"
+        if not legacy.exists() or not legacy.is_dir():
+            return
+        for ws_dir in legacy.iterdir():
+            if not ws_dir.is_dir():
+                continue
+            new_root = self._workspaces_dir / ws_dir.name / "chats"
+            new_root.mkdir(parents=True, exist_ok=True)
+            for chat_dir in ws_dir.iterdir():
+                target = new_root / chat_dir.name
+                if target.exists():
+                    continue
+                chat_dir.rename(target)
+            try:
+                ws_dir.rmdir()
+            except OSError:
+                pass
+        try:
+            legacy.rmdir()
+        except OSError:
+            pass
+
+    def _workspace_chats_dir(self, workspace_id: str) -> Path:
+        return self._workspaces_dir / workspace_id / "chats"
 
     def _chat_dir(self, workspace_id: str, chat_id: str) -> Path:
-        return self._chats_dir / workspace_id / chat_id
+        return self._workspace_chats_dir(workspace_id) / chat_id
+
+    def _iter_workspace_chat_roots(self) -> "list[Path]":
+        if not self._workspaces_dir.exists():
+            return []
+        roots: list[Path] = []
+        for ws_dir in self._workspaces_dir.iterdir():
+            if not ws_dir.is_dir():
+                continue
+            chats_dir = ws_dir / "chats"
+            if chats_dir.exists():
+                roots.append(chats_dir)
+        return roots
 
     async def create_chat(self, *, workspace_id: str, title: str | None) -> ChatSummary:
         chat_id = _new_chat_id()
@@ -142,12 +181,11 @@ class ChatStore:
             if chat_id in self._pending:
                 return self._summary(self._pending[chat_id])
             # Existing on-disk chat?
-            if self._chats_dir.exists():
-                for ws_dir in self._chats_dir.iterdir():
-                    meta = ws_dir / chat_id / "metadata.json"
-                    if meta.exists():
-                        rec = ChatRecord.model_validate_json(meta.read_text())
-                        return self._summary(rec)
+            for ws_chats in self._iter_workspace_chat_roots():
+                meta = ws_chats / chat_id / "metadata.json"
+                if meta.exists():
+                    rec = ChatRecord.model_validate_json(meta.read_text())
+                    return self._summary(rec)
             now = datetime.now(UTC)
             rec = ChatRecord(
                 chat_id=chat_id, workspace_id=workspace_id, title=title,
@@ -165,7 +203,7 @@ class ChatStore:
 
     async def list_chats(self, workspace_id: str) -> list[ChatSummary]:
         async with self._lock:
-            ws_dir = self._chats_dir / workspace_id
+            ws_dir = self._workspace_chats_dir(workspace_id)
             seen: set[str] = set()
             summaries: list[ChatSummary] = []
             if ws_dir.exists():
@@ -190,22 +228,21 @@ class ChatStore:
                     chat_id=chat_id, workspace_id=pending.workspace_id,
                     deleted=True, files_removed=0,
                 )
-            if self._chats_dir.exists():
-                for ws_dir in self._chats_dir.iterdir():
-                    cdir = ws_dir / chat_id
-                    if cdir.exists():
-                        files = sum(1 for _ in cdir.rglob("*") if _.is_file())
-                        shutil.rmtree(cdir)
-                        return ChatDeleteResult(
-                            chat_id=chat_id, workspace_id=ws_dir.name,
-                            deleted=True, files_removed=files,
-                        )
+            for ws_chats in self._iter_workspace_chat_roots():
+                cdir = ws_chats / chat_id
+                if cdir.exists():
+                    files = sum(1 for _ in cdir.rglob("*") if _.is_file())
+                    shutil.rmtree(cdir)
+                    return ChatDeleteResult(
+                        chat_id=chat_id, workspace_id=ws_chats.parent.name,
+                        deleted=True, files_removed=files,
+                    )
             raise ChatNotFound(chat_id=chat_id)
 
     async def cascade_delete_for_workspace(self, workspace_id: str) -> list[ChatDeleteResult]:
         async with self._lock:
             results: list[ChatDeleteResult] = []
-            ws_dir = self._chats_dir / workspace_id
+            ws_dir = self._workspace_chats_dir(workspace_id)
             if ws_dir.exists():
                 for cdir in sorted(ws_dir.iterdir()):
                     if cdir.is_dir():
@@ -235,18 +272,17 @@ class ChatStore:
     async def _load_record(self, chat_id: str) -> ChatRecord:
         if chat_id in self._pending:
             return self._pending[chat_id]
-        if self._chats_dir.exists():
-            for ws_dir in self._chats_dir.iterdir():
-                meta = ws_dir / chat_id / "metadata.json"
-                if meta.exists():
-                    rec = ChatRecord.model_validate_json(meta.read_text())
-                    msgs_path = ws_dir / chat_id / "messages.jsonl"
-                    if msgs_path.exists():
-                        rec.messages = [
-                            ChatMessage.model_validate_json(line)
-                            for line in msgs_path.read_text().splitlines() if line.strip()
-                        ]
-                    return rec
+        for ws_chats in self._iter_workspace_chat_roots():
+            meta = ws_chats / chat_id / "metadata.json"
+            if meta.exists():
+                rec = ChatRecord.model_validate_json(meta.read_text())
+                msgs_path = ws_chats / chat_id / "messages.jsonl"
+                if msgs_path.exists():
+                    rec.messages = [
+                        ChatMessage.model_validate_json(line)
+                        for line in msgs_path.read_text().splitlines() if line.strip()
+                    ]
+                return rec
         raise ChatNotFound(chat_id=chat_id)
 
     async def _flush_record(self, rec: ChatRecord) -> None:

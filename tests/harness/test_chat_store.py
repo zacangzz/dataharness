@@ -16,7 +16,7 @@ async def test_create_chat_does_not_write_to_disk(store, tmp_path):
     summary = await store.create_chat(workspace_id="w1", title="t")
     assert summary.workspace_id == "w1"
     assert summary.message_count == 0
-    chat_dir = tmp_path / "chats" / "w1" / summary.chat_id
+    chat_dir = tmp_path / "workspaces" / "w1" / "chats" / summary.chat_id
     assert not chat_dir.exists()
 
 
@@ -27,7 +27,7 @@ async def test_first_message_creates_files(store, tmp_path):
         ts=datetime.now(UTC), turn_id="t1", active_mode="analyst", token_estimate=1,
     )
     await store.append_message(summary.chat_id, msg)
-    chat_dir = tmp_path / "chats" / "w1" / summary.chat_id
+    chat_dir = tmp_path / "workspaces" / "w1" / "chats" / summary.chat_id
     assert (chat_dir / "metadata.json").exists()
     assert (chat_dir / "messages.jsonl").exists()
 
@@ -69,7 +69,7 @@ async def test_delete_chat_removes_files(store, tmp_path):
         message_id="m", role="user", text="x", ts=datetime.now(UTC),
         turn_id=None, active_mode=None, token_estimate=1,
     ))
-    chat_dir = tmp_path / "chats" / "w1" / s.chat_id
+    chat_dir = tmp_path / "workspaces" / "w1" / "chats" / s.chat_id
     assert chat_dir.exists()
     result = await store.delete_chat(s.chat_id)
     assert result.deleted is True
@@ -90,4 +90,4 @@ async def test_cascade_delete_for_workspace(store, tmp_path):
     ))
     removed = await store.cascade_delete_for_workspace("w1")
     assert {r.chat_id for r in removed} == {a.chat_id, b.chat_id}
-    assert not (tmp_path / "chats" / "w1").exists()
+    assert not (tmp_path / "workspaces" / "w1" / "chats").exists()

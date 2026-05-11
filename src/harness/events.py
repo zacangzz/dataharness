@@ -61,6 +61,28 @@ class TurnCancelled(HarnessEvent):
     cancelled_at: datetime
 
 
+class TurnPaused(HarnessEvent):
+    event_name: Literal["TurnPaused"] = "TurnPaused"
+    reason: Literal["awaiting_tool_dispatch"]
+    pending_tool_calls: list[dict[str, Any]] = Field(default_factory=list)
+    partial_text: str = ""
+
+
+class ModeHandoffAccepted(HarnessEvent):
+    event_name: Literal["ModeHandoffAccepted"] = "ModeHandoffAccepted"
+    from_mode: str
+    to_mode: str
+    reason: str
+
+
+class ToolCallExecuted(HarnessEvent):
+    event_name: Literal["ToolCallExecuted"] = "ToolCallExecuted"
+    tool_name: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    result: dict[str, Any] = Field(default_factory=dict)
+    iteration: int = 0
+
+
 # --- status / health ---
 
 class StatusChanged(HarnessEvent):
@@ -242,6 +264,7 @@ class DoctorActionProposed(HarnessEvent):
     action: Literal["cleanup", "promote", "keep", "review"]
     target: str
     rationale: str
+    destination_path: str | None = None
 
 
 class DoctorReportReady(HarnessEvent):

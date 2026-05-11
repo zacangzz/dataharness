@@ -35,7 +35,7 @@ Skim the **Top-level Indices** for navigation, then drop into **Per-file Invento
 
 ```
 src/cli.py
-  → harness, observability  (no app.* imports; constructs DataHarnessApp via harness.factory)
+  → harness, observability, worker.sandbox_bootstrap (private `-m` dispatch; no app.* imports; constructs DataHarnessApp via harness.factory)
 
 src/app/__init__.py                     → (none)
 src/app/events.py                       → (none)
@@ -48,7 +48,7 @@ src/app/agents/prompt_packages.py       → app.agents.types
 src/app/agents/analyst.py               → app.agents.prompt_packages
 src/app/agents/knowledge.py             → app.agents.prompt_packages
 src/app/agents/interaction.py           → app.agents.prompt_packages
-src/app/agents/intent_handlers.py       → (none)
+(agentic loop relocated to harness layer per spec §8.1; see src/harness/orchestrator.py:run_agentic_turn)
 src/app/tui/__init__.py                 → (none)
 src/app/tui/app.py                      → app.session, app.tui.commands, app.tui.event_consumer,
                                            app.tui.file_picker, app.tui.help, app.tui.jump,
@@ -98,7 +98,8 @@ src/harness/knowledge.py                → harness.control, harness.persistence
 src/harness/orchestrator.py             → harness.chat, harness.command_registry, harness.context,
                                            harness.control, harness.doctor, harness.doctor_runner,
                                            harness.events, harness.exceptions, harness.persistence,
-                                           harness.state_machine, harness.status, harness.workspace_async
+                                           harness.state_machine, harness.status, harness.workspace_async,
+                                           worker.executor, worker.models, worker.policy
 src/harness/paths.py                    → (none)
 src/harness/persistence.py              → harness.control, harness.db
 src/harness/prompt_registry.py          → (none)
@@ -184,11 +185,11 @@ src/worker/sandbox_bootstrap.py         → (subprocess; no static src.* imports
 
 **Textual `App`/`Screen`/`Widget` subclasses (app/tui):**
 - `App[None]` ← `DataHarnessApp` (app/tui/app.py)
-- `Screen` ← `ApprovalScreen`, `ClarificationScreen` (screens.py); `ChatManagerScreen`, `CommandPaletteScreen`, `WorkspaceManagerScreen`, `WorkspaceModal` (screens/*)
+- `Screen` ← `ChatManagerScreen`, `CommandPaletteScreen`, `WorkspaceManagerScreen`, `WorkspaceModal` (screens/*) — `ClarificationScreen` removed (now inline `ClarificationBar`)
 - `ModalScreen` ← `HelpScreen` (help.py), `JumpOverlay` (jump.py)
-- `Static` ← `WorkspaceBar`, `PlanPane`, `StepStatusPane`, `ArtifactsPane`, `ContextMemoryPane`, `DoctorPane`, `FailurePane`, `ProvenancePane`, `StatusPane` (widgets.py); `UserMessageBlock`, `SystemMessageBlock` (conversation.py)
+- `Static` ← `WorkspaceBar`, `PlanPane`, `StepStatusPane`, `ArtifactsPane`, `ContextMemoryPane`, `DoctorPane`, `FailurePane`, `ProvenancePane`, `StatusPane` (widgets.py — all default to `markup=False`); `UserMessageBlock`, `SystemMessageBlock` (conversation.py — markup=False)
 - `VerticalScroll` ← `ConversationPane`, `SidebarPane` (widgets.py)
-- `Vertical` ← `PromptBar` (prompt_bar.py); `AssistantMessageBlock` (conversation.py); `WorkspaceSection`, `ChatsSection`, `FilesSection`, `TraceSection`, `CommandsSection`, `DoctorSection`, `FailuresSection` (sidebar_sections.py)
+- `Vertical` ← `PromptBar` (prompt_bar.py); `AssistantMessageBlock` (conversation.py); `WorkspaceSection`, `ChatsSection`, `FilesSection`, `TraceSection`, `CommandsSection`, `DoctorSection`, `FailuresSection` (sidebar_sections.py); `ApprovalBanner`, `ClarificationBar` (widgets.py — inline; replace ApprovalScreen and ClarificationScreen)
 - `ModalScreen` ← `FileIngestScreen` (screens/file_ingest.py)
 - `Message` ← `ResumeChatRequested`, `InsertMentionRequested` (sidebar_sections.py); `FilePicker.Selected`, `FilePicker.Confirmed`, `FilePicker.Dismissed` (file_picker.py)
 - `TextArea` ← `PromptEditor` (prompt_editor.py)
@@ -197,7 +198,7 @@ src/worker/sandbox_bootstrap.py         → (subprocess; no static src.* imports
 
 **Other:**
 - `logging.Filter` ← `TelemetryContextFilter` (observability/logging_setup)
-- `Protocol` ← `Runtime` (runtime/protocol), `Helpable` (app/tui/help), `KnowledgeManagerProtocol` (app/agents/intent_handlers)
+- `Protocol` ← `Runtime` (runtime/protocol), `Helpable` (app/tui/help), `KnowledgeManagerProtocol` (harness/knowledge_intents)
 - `NamedTuple` ← `FingerprintResult` (harness/fingerprints), `JumpInfo` (app/tui/jump)
 - frozen `dataclass` ← `RepairResult` (harness/repair), `ActiveWorkspace` (harness/workspace), `_TaskRecord` (worker/executor)
 
@@ -236,7 +237,7 @@ src/worker/sandbox_bootstrap.py         → (subprocess; no static src.* imports
 **`KnowledgeManager.propose_update` (harness/knowledge.py):**
 - Returns `MemoryUpdateProposal` (harness/control.py)
 - `guarded_external_memory_write` enforces single-writer rule (always raises elsewhere)
-- Called from `app.agents.intent_handlers.handle_knowledge_intent`
+- Called from `harness.knowledge_intents.handle_knowledge_intent`
 
 **`ChatStore` (harness/chat.py):**
 - `cascade_delete_for_workspace` invoked by `AsyncWorkspaceManager.delete_workspace`
@@ -295,7 +296,7 @@ user keystroke
 | `AgentModeRouter` | `src/app/agents/router.py` |
 | `PromptPackageRegistry` | `src/app/agents/prompt_packages.py` |
 | `AnalystMode` / `KnowledgeMode` / `InteractionMode` | `src/app/agents/{analyst,knowledge,interaction}.py` |
-| `handle_knowledge_intent` | `src/app/agents/intent_handlers.py` |
+| `handle_knowledge_intent` | `src/harness/knowledge_intents.py` |
 | `to_app_event` | `src/app/event_mapping.py` |
 | `EventConsumer` | `src/app/tui/event_consumer.py` |
 | `ConversationPane` / `SidebarPane` / `WorkspaceBar` (+ panes) | `src/app/tui/widgets.py` |
@@ -307,14 +308,15 @@ user keystroke
 | `WorkspaceSection` / `ChatsSection` / `FilesSection` / `TraceSection` / `CommandsSection` / `DoctorSection` / `FailuresSection` / `ResumeChatRequested` / `InsertMentionRequested` | `src/app/tui/sidebar_sections.py` |
 | `SidebarState` | `src/app/tui/sidebar.py` |
 | `UserMessageBlock` / `AssistantMessageBlock` / `SystemMessageBlock` | `src/app/tui/conversation.py` |
-| `ApprovalScreen` / `ClarificationScreen` | `src/app/tui/screens.py` |
+| `ApprovalBanner` | `src/app/tui/widgets.py` (replaces former `ApprovalScreen`) |
+| `ClarificationBar` | `src/app/tui/widgets.py` (replaces former `ClarificationScreen`) |
 | `WorkspaceManagerScreen` | `src/app/tui/screens/workspace_manager.py` |
 | `HelpScreen` | `src/app/tui/help.py` |
 | `Jumper` / `JumpOverlay` | `src/app/tui/jump.py` |
 | `RunTrace` | `src/app/tui/run_trace.py` |
 | `DataHarnessCommandProvider` / `build_command_prefill` | `src/app/tui/commands.py` |
 | `build_orchestrator` | `src/harness/factory.py` |
-| `build_app` / `main` | `src/cli.py` |
+| `_dispatch_private_module` / `build_app` / `main` | `src/cli.py` |
 | `bootstrap_workspace` | `src/harness/workspace.py` |
 | `lazy_fingerprint` / `sha256_file` | `src/harness/fingerprints.py` |
 | `classify` / `ValidityState` | `src/harness/validity.py` |
@@ -346,18 +348,22 @@ user keystroke
 **Imports (internal only — from same repo `src/`):**
 - (re-exports/uses harness, observability; no `app.*` imports)
 **Defines:**
+- **var** `_PRIVATE_MODULE_TARGETS` — private module targets accepted by the packaged CLI dispatch path
 - **func** `_default_runtime_factory(config, telemetry) -> LlamaCppRuntime` — creates LlamaCppRuntime
 - **func** `build_app(telemetry, *, workspace_id, app_root, runtime_factory, runtime) -> DataHarnessApp` — constructs app: session + state + telemetry + optional runtime
 - **func** `_parse_argv(argv) -> argparse.Namespace` — CLI parser (workspace, app-root flags)
-- **func** `main() -> None` — entry: parse → configure logging+telemetry → build → run app
+- **func** `_dispatch_private_module(argv) -> int | None` — handles packaged private `-m worker.sandbox_bootstrap <config>` before TUI startup
+- **func** `main() -> None` — entry: private worker dispatch if requested, else parse → configure logging+telemetry → build → run app
 **Internal calls:**
 - `harness.factory.build_orchestrator` (wires Layer 3)
 - `runtime.llama_cpp_runtime.LlamaCppRuntime(config, telemetry)`
+- `worker.sandbox_bootstrap.main()` (private packaged worker subprocess path)
 - `app.tui.app.DataHarnessApp(...)`
 - `observability.configure_logging`, `Telemetry`, `bind_boot`, `bind_session`
 **Notes:**
 - Sole place where `runtime_factory` is constructed; passed into `build_orchestrator`
 - Bootstrap telemetry events emitted before app is built
+- Packaged worker subprocesses call `dataharness -m worker.sandbox_bootstrap <config>`; `_dispatch_private_module` must handle this before argparse/TUI construction
 
 ---
 
@@ -462,7 +468,7 @@ Re-exports `PromptPackageRegistry`, `AgentModeRouter`.
 - **class** `InteractionMode` — default front-door builder
 **Notes:** intents: `answer_directly`, `handoff_to_analyst`, `handoff_to_knowledge`, `request_clarification`
 
-### `src/app/agents/intent_handlers.py`
+### `src/harness/knowledge_intents.py`
 **Defines:**
 - **class** `KnowledgeManagerProtocol(Protocol)` — `propose_update(...)`
 - **func** `_slug(text) -> str` — kebab-case slug
@@ -477,15 +483,15 @@ Marker.
 - `app.session.AppSession`
 - `app.tui.commands.DataHarnessCommandProvider, build_command_prefill`
 - `app.tui.event_consumer.EventConsumer`
-- `app.tui.file_picker.WorkspaceFileIndex`
+- `app.tui.file_picker.FilePicker, WorkspaceFileIndex, format_file_mention`
 - `app.tui.help.HelpScreen`
 - `app.tui.jump.Jumper, JumpOverlay`
 - `app.tui.prompt_bar.PromptBar`
 - `app.tui.prompt_editor.PromptEditor`
 - `app.tui.run_trace.RunTrace`
-- `app.tui.screens.ApprovalScreen, ClarificationScreen`
+- `app.tui.screens.file_ingest.FileIngestScreen`
 - `app.tui.screens.workspace_manager.WorkspaceManagerScreen`
-- `app.tui.widgets.ConversationPane, SidebarPane, WorkspaceBar`
+- `app.tui.widgets.ApprovalBanner, ClarificationBar, ConversationPane, SidebarPane, WorkspaceBar`
 **Defines:**
 - **var** `DataAnalysisAppSession = AppSession` (alias)
 - **class** `DataHarnessApp(App[None])` — main Textual app; layout, event dispatch, input
@@ -504,7 +510,9 @@ Marker.
   - `on_input_submitted(event)` — preserved for non-prompt `Input` widgets
   - `on_prompt_editor_submitted(PromptEditor.Submitted)` — primary prompt submit handler
   - `_refresh_sidebar_resources()` — async; refreshes sidebar files/chats from `WorkspaceFileIndex` + chat store
-  - `action_resume_chat`, `action_open_workspaces`, `action_toggle_jump_mode`, `action_help`
+  - `action_resume_chat`, `action_open_workspaces`, `action_open_files`, `action_upload_files`, `action_toggle_jump_mode`, `action_help`
+  - `action_copy_text`, `_copyable_text` — copy selected Textual text or focused widget text fallback
+  - `_insert_mention_into_editor(path)` — inserts formatted `@file` mention and restores editor focus
   - `handle_approval_decision(plan, step_contract, decision)` → `_stream_resume_approved`
   - `handle_clarification_response(text)` → `_stream_clarification`
 **Internal calls:** `AppSession`, all imports above
@@ -536,6 +544,8 @@ Marker.
 ### `src/app/tui/conversation.py`
 **Imports:** `textual.app.ComposeResult`, `textual.containers.Vertical`, `textual.widgets.{Markdown, Static}`
 **Defines:**
+- **func** `_clean(text)` — strips tool/draft follow-up noise and applies Layer-4 presentation formatting
+- **func** `_format_tabular_fences(text)` / `_markdown_table_from_delimited(...)` — render CSV/TSV code fences as markdown tables for display only
 - **class** `UserMessageBlock(Static)` — single-message block; CSS class `message-user`
   - `__init__(text)`, `text_buffer()`
 - **class** `AssistantMessageBlock(Vertical)` — Markdown-rendered assistant block; CSS class `message-assistant`
@@ -589,11 +599,9 @@ Marker.
 - **class** `JumpOverlay(ModalScreen[str | Widget | None])`
   - `compose`, `on_key`, `action_dismiss_overlay`
 
-### `src/app/tui/screens.py`
-**Defines:**
-- **class** `ApprovalScreen(Screen[None])` — buttons: Approve/Reject/Revise → `app.handle_approval_decision`
-- **class** `ClarificationScreen(Screen[None])` — input + submit → `app.handle_clarification_response`
-**Notes:** decision strings: approve→approved, reject→rejected, revise→revise_requested
+### `src/app/tui/screens.py` and `src/app/tui/screens/__init__.py`
+**Defines:** (empty — placeholder for backward import compatibility)
+**Notes:** `ApprovalScreen` and `ClarificationScreen` removed; both are now inline widgets (`ApprovalBanner`, `ClarificationBar`) in `widgets.py`. Approval decision strings unchanged: approve→approved, reject→rejected, revise→revise_requested.
 
 ### `src/app/tui/widgets.py`
 **Imports:** `app.tui.help.HelpData`, `app.tui.conversation.{AssistantMessageBlock, SystemMessageBlock, UserMessageBlock}`, `app.tui.sidebar.SidebarState`, `app.tui.sidebar_sections.*`
@@ -611,6 +619,8 @@ Marker.
 - **class** `FailurePane(Static)` — `render_failure(failure)`
 - **class** `ProvenancePane(Static)` — `render_lineage(refs)`
 - **class** `StatusPane(Static)` — `append_events(events)`
+- **class** `ApprovalBanner(Vertical)` — inline approval banner; `show(plan, step_contract)`/`hide()`; keys `a`/`r`/`v` and buttons emit `ApprovalBanner.ApprovalDecisionMade(plan, step_contract, decision)`; replaces the removed `ApprovalScreen`
+- **class** `ClarificationBar(Vertical)` — inline clarification bar; `show(question)`/`hide()`; Input + Submit/Dismiss buttons; emits `ClarificationBar.ClarificationSubmitted(text)` on Enter or Submit; `ClarificationBar.ClarificationDismissed` on escape or Dismiss; replaces the removed `ClarificationScreen`
 **Notes:** active widgets: `ConversationPane`, `SidebarPane`, `WorkspaceBar`. Other panes available for alternate layouts.
 
 ### `src/app/tui/run_trace.py`
@@ -665,7 +675,7 @@ Marker.
   - `_workspace_dir`, `_file_query(text)`, `_show_file_picker(query)`
   - `refresh_hints(text)` — async; calls `session.list_commands`, `list_chats`, `list_workspaces`
   - `_build_hint_text`, `_format_descriptors`, `_build_hint_options`, `_set_hint_options`, `_has_hint_options`
-  - `_accept_highlighted_hint`, `_prefill_command`, `_prefill_argument`, `_argument_candidates(arg_type)`
+  - `_restore_editor_focus`, `_accept_highlighted_hint`, `_prefill_command`, `_prefill_argument`, `_argument_candidates(arg_type)`
   - `on_editor_changed(TextArea.Changed)` — listener for `#user_input`
   - `on_prompt_editor_submitted(PromptEditor.Submitted)`
   - `on_hint_option_selected`, `on_file_picker_selected(FilePicker.Selected)`, `on_file_picker_dismissed(FilePicker.Dismissed)`, `_picker_visible`, `on_key`, `text_buffer`
@@ -822,8 +832,9 @@ Re-exports `HarnessCommandRegistry`.
 - **var** `PHASES` — scan_sources/review_validity/review_lineage/review_tmp/review_memory/assemble_recommendations
 - **class** `DoctorRunner`
   - `run(*, workspace_id, workspace_dir, trigger, chat_id, run_id) -> AsyncIterator[HarnessEvent]`
-  - `_run_phase(...)` — only `review_tmp` fully implemented; others stub
-  - `_category(phase)`
+  - `_run_phase(...)` — `review_tmp` discovers tmp files and emits promotion/keep actions; others stub
+  - `_classify_tmp_items(items)` — successful `step.py` → function promotion; failed step evidence → keep
+  - `_read_step_result(path)`, `_event_action(action)`, `_category(phase)`
 
 ### `src/harness/events.py`
 **Imports:** `harness.status.HarnessStatusSnapshot`; `runtime.types.RuntimeStatus`; `worker.models.StepExecutionEnvelope, StepTaskStatus`
@@ -863,8 +874,11 @@ Re-exports `HarnessCommandRegistry`.
 **Notes:** spec §6.13 + §10.8; reuse blocked unless source validity is `ok`/`revalidated`
 
 ### `src/harness/orchestrator.py`
-**Imports:** all of `harness.{chat, command_registry, context, control, doctor, doctor_runner, events, exceptions, persistence, state_machine, status, workspace_async}`
+**Imports:** all of `harness.{chat, command_registry, context, control, doctor, doctor_runner, events, exceptions, persistence, state_machine, status, workspace_async}` plus `worker.{executor,models,policy}`
 **Defines:**
+- **func** `_sanitize_assistant_text(text)` — strips leaked assistant draft and Gemma turn markers before chat persistence
+- **func** `_summarize_step_execution(workspace_dir, envelope)` — status-aware final message for worker results/failures
+- **func** `_read_workspace_file(...)` — raw Layer-3 workspace text read with boundary and size caps
 - **class** `Orchestrator`
   - `_register_commands` (built-ins: doctor, compact, help, cancel_run, memory_review, inspect_artifact, provenance_inspect, validity_inspect, mark_result_trusted, mark_result_invalidated, challenge_conclusion, stop_after_current_step, revise_goal, retry_step, rerun_step, chat ops, workspace ops). All Layer 3 commands now available; no stubs remain.
   - `_handle_doctor`, `_handle_compact`, `_handle_help`, `_handle_cancel_run`, `_handle_memory_review`, `_handle_inspect_artifact`, `_handle_provenance_inspect`, `_handle_validity_inspect`, `_handle_mark_result_trusted`, `_handle_mark_result_invalidated`, `_handle_challenge_conclusion`, `_handle_stop_after_current_step`, `_handle_revise_goal`, `_handle_retry_step`, `_handle_rerun_step`, `_handle_unavailable` (fallback)
@@ -879,12 +893,16 @@ Re-exports `HarnessCommandRegistry`.
   - **workspace ops:** `list_workspaces`, `create_workspace`, `rename_workspace`, `delete_workspace`, `activate_workspace(force)`, `ingest_files`
   - **run lock:** `_acquire_run(run_id)` raises `RunAlreadyActive`; `_release_run`
   - **chat ops:** `create_chat`, `list_chats`, `view_chat`, `delete_chat`, `resume_chat`, `compact_chat_history`
-  - **turn:** `run_turn(state, *, workspace_dir, chat_id, user_input, requested_mode, prompt_text) -> AsyncIterator[HarnessEvent]`
+  - **turn:** `run_turn(state, *, workspace_dir, chat_id, user_input, requested_mode, prompt_text, durable_context="") -> AsyncIterator[HarnessEvent]` — single-stream; emits `TurnPaused`/`TurnFailed(empty_output)` instead of hollow asg_ rows
+  - **agentic turn:** `run_agentic_turn(state, *, workspace_dir, chat_id, user_input, requested_mode, prompt_provider, max_iterations=4) -> AsyncIterator[HarnessEvent]` — bounded multi-iteration loop: build durable context → run_turn → dispatch tool_calls → handle handoffs/retry → ApprovalRequired termination. Layer-3 owned per spec §6.3 / §8.1.
+  - **tool dispatch:** `_dispatch_tool_call(state, name, args) -> AsyncIterator[HarnessEvent]` — routes knowledge intents via `knowledge_intents.handle_knowledge_intent`, others via `registry.get_handler(name)`; re-yields handler events
+  - **context block:** `_build_durable_context_block(workspace_id, workspace_dir) -> str`
   - `close`, `cancel_run(run_id, reason) -> TurnCancelled`
   - **status:** `status_snapshot(workspace_id)`, `watch_status() -> AsyncIterator`
   - **execution resumption:** `resume_approved_step(...)`, `resume_with_clarification(...)`
   - `prepare_worker_dispatch(plan, *, approval) -> dict` — validates code-exec approval
-  - `_build_v1_analysis_plan(state, user_input) -> tuple[Plan, StepContract]` — deterministic analyst plan
+  - `_build_plan_from_arguments(state, *, goal, steps) -> tuple[Plan, list[StepContract]]` — validates `plan_analysis` args and imports against worker policy; LLM owns code text
+  - `_handle_plan_analysis(ctx, args)` / `_handle_request_execution(ctx, args)` — registered runtime-callable commands; emit PlanReady + ApprovalRequired
   - `switch_workspace(state, *, new_workspace_id) -> RunStateRecord`
 **Notes:**
 - Single-active-run via `_acquire_run`/`_release_run`
@@ -1106,7 +1124,7 @@ Re-exports `PythonStepExecutor` (executor); `ExecutionEnvelope`, `ExecutionStatu
 - **func** `utc_now()`
 - **enum** `ExecutionStatus(StrEnum)` — OK/EXECUTION_ERROR/TIMEOUT/RESOURCE_EXHAUSTED/CONTRACT_ERROR/SANDBOX_ERROR
 - **enum** `FailureKind(StrEnum)` — OK/PYTHON_EXCEPTION/TIMEOUT_OR_RESOURCE_EXHAUSTION/MISSING_OUTPUT_FILES/MALFORMED_RESULT_JSON/PARTIAL_ARTIFACT_GENERATION/SANDBOX_VIOLATION
-- **class** `ResourceLimits(BaseModel)` — timeout=60s, memory=1024MB, artifact=100M, stdout/stderr=5M
+- **class** `ResourceLimits(BaseModel)` — timeout=120s, memory=1024MB, artifact=100M, stdout/stderr=5M
 - **class** `PermissionEnvelope(BaseModel)` — allowed_read_paths, registered_artifact_paths, allowed_write_roots (default `artifacts/tmp`), allowed_packages, allow_network=False, allow_shell=False
 - **class** `StepExecutionRequest(BaseModel)` — full request payload + `effective_timeout()`
 - **class** `ExecutionEnvelope(BaseModel)` — status/paths/artifact_refs/execution_metadata/failure_kind (note: distinct from `harness.control.ExecutionEnvelope`)

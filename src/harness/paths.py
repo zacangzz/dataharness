@@ -39,6 +39,7 @@ class WorkspacePaths(BaseModel):
     functions_dir: Path
     state_dir: Path
     workspace_db_path: Path
+    chats_dir: Path
 
     @classmethod
     def from_workspace_dir(cls, root: Path) -> "WorkspacePaths":
@@ -54,6 +55,7 @@ class WorkspacePaths(BaseModel):
             functions_dir=root / "memory" / "functions",
             state_dir=root / "state",
             workspace_db_path=root / "state" / "workspace.db",
+            chats_dir=root / "chats",
         )
 
     def relative(self, path: Path) -> Path:

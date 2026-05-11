@@ -37,7 +37,8 @@ class AppSession:
             self.orchestrator.telemetry = self.telemetry
         self.mode_router = mode_router or AgentModeRouter(telemetry=self.telemetry)
         self.prompt_registry = prompt_registry or PromptPackageRegistry(
-            Path(__file__).resolve().parent / "agents" / "prompts"
+            Path(__file__).resolve().parent / "agents" / "prompts",
+            command_registry=getattr(self.orchestrator, "registry", None),
         )
         self._active = False
 
@@ -56,12 +57,16 @@ class AppSession:
         try:
             with bind_turn(turn_id):
                 self.telemetry.emit(Layer.APP, EventKind.TURN_START, payload={"input_chars": len(user_text)})
+                # L4 owns: initial mode pick + prompt provision (§8.3 step 2).
+                # L3 owns: agentic loop, tool dispatch, retry, handoff (§6.3, §8.1).
                 decision = self.mode_router.route(user_text)
-                package = self.prompt_registry.load(decision.mode)
-                async for h_ev in self.orchestrator.run_turn(
-                    state, workspace_dir=workspace_dir, chat_id=chat_id,
-                    user_input=user_text, requested_mode=decision.mode,
-                    prompt_text=package.prompt_text,
+
+                def prompt_provider(mode: str) -> str:
+                    return self.prompt_registry.load(mode).prompt_text
+
+                async for h_ev in self.orchestrator.run_agentic_turn(
+                    state, workspace_dir=workspace_dir, chat_id=chat_id, user_input=user_text,
+                    requested_mode=decision.mode, prompt_provider=prompt_provider,
                 ):
                     yield to_app_event(h_ev)
                 self.telemetry.emit(Layer.APP, EventKind.TURN_END, payload={"chat_id": chat_id})
@@ -70,11 +75,13 @@ class AppSession:
 
     async def resume_approved_step(
         self, *, workspace_dir: Path, state: RunStateRecord,
-        plan_payload: dict, contract_payload: dict, approval,
+        contract_payload: dict, approval,
+        plan_id: str | None = None, plan_payload: dict | None = None,
     ) -> AsyncIterator[AppEvent]:
         async for h_ev in self.orchestrator.resume_approved_step(
             workspace_dir=workspace_dir, state=state,
-            plan_payload=plan_payload, contract_payload=contract_payload, approval=approval,
+            plan_id=plan_id, plan_payload=plan_payload,
+            contract_payload=contract_payload, approval=approval,
         ):
             yield to_app_event(h_ev)
 

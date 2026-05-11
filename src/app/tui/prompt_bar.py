@@ -248,6 +248,15 @@ class PromptBar(Vertical):
     def _has_hint_options(self) -> bool:
         return self.query_one("#prompt_hint_options", OptionList).option_count > 0
 
+    def _restore_editor_focus(self) -> None:
+        try:
+            self.app.set_focus(self.editor)
+        except Exception:
+            try:
+                self.editor.focus()
+            except Exception:
+                pass
+
     def _accept_highlighted_hint(self, source_text: str | None = None) -> None:
         option_list = self.query_one("#prompt_hint_options", OptionList)
         option = option_list.highlighted_option
@@ -326,19 +335,13 @@ class PromptBar(Vertical):
         picker = self.query_one("#prompt_file_picker", FilePicker)
         picker.display = False
         self._picker_was_visible = False
-        try:
-            self.set_focus(self.editor)
-        except Exception:
-            pass
+        self._restore_editor_focus()
         event.stop()
 
     @on(FilePicker.Dismissed)
     def on_file_picker_dismissed(self, event: FilePicker.Dismissed) -> None:
         self._picker_was_visible = False
-        try:
-            self.set_focus(self.editor)
-        except Exception:
-            pass
+        self._restore_editor_focus()
         event.stop()
 
     def _picker_visible(self) -> bool:

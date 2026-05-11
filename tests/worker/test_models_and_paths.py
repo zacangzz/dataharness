@@ -52,6 +52,10 @@ def test_request_tracks_declared_inputs_permissions_outputs_and_run_metadata(tmp
     assert request.expected_output_contract == ["table.csv"]
 
 
+def test_default_worker_timeout_is_two_minutes() -> None:
+    assert ResourceLimits().timeout_seconds == 120
+
+
 def test_envelope_uses_spec_field_names_and_workspace_relative_paths() -> None:
     envelope = ExecutionEnvelope(
         id="env_r_1_s_1",

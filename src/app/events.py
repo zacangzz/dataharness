@@ -50,6 +50,27 @@ class AppTurnCancelled(AppEvent):
     cancelled_at: datetime
 
 
+class AppTurnPaused(AppEvent):
+    event_name: Literal["AppTurnPaused"] = "AppTurnPaused"
+    reason: Literal["awaiting_tool_dispatch"]
+    pending_tool_calls: list[dict[str, Any]] = Field(default_factory=list)
+    partial_text: str = ""
+
+
+class AppModeHandoff(AppEvent):
+    event_name: Literal["AppModeHandoff"] = "AppModeHandoff"
+    target_mode: str
+    reason: str
+
+
+class AppToolCallExecuted(AppEvent):
+    event_name: Literal["AppToolCallExecuted"] = "AppToolCallExecuted"
+    tool_name: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    result: dict[str, Any] = Field(default_factory=dict)
+    iteration: int = 0
+
+
 class AppStatusChanged(AppEvent):
     event_name: Literal["AppStatusChanged"] = "AppStatusChanged"
     snapshot: dict[str, Any]

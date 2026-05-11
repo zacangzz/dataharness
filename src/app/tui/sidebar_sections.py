@@ -35,7 +35,7 @@ class WorkspaceSection(Vertical):
 
     def compose(self) -> ComposeResult:
         yield Static("WORKSPACE", classes="sidebar-section-header")
-        yield Static("", id="workspace_section_body")
+        yield Static("", id="workspace_section_body", markup=False)
 
     def update_status(
         self,
@@ -75,7 +75,7 @@ class ChatsSection(Vertical):
 
     def compose(self) -> ComposeResult:
         yield Static("CHAT", classes="sidebar-section-header")
-        yield OptionList(id="chats_options")
+        yield OptionList(id="chats_options", markup=False)
 
     def update_chats(self, summaries: list[Any]) -> None:
         self._chat_lines = []
@@ -125,7 +125,7 @@ class FilesSection(Vertical):
 
     def compose(self) -> ComposeResult:
         yield Static("FILES", classes="sidebar-section-header")
-        yield OptionList(id="files_options")
+        yield OptionList(id="files_options", markup=False)
 
     def update_files(self, files: list[str]) -> None:
         self._files = list(files)[:20]
@@ -162,7 +162,7 @@ class _DequeSection(Vertical):
 
     def compose(self) -> ComposeResult:
         yield Static(self.title, classes="sidebar-section-header")
-        yield Static("", id=f"{self.title.lower()}_body")
+        yield Static("", id=f"{self.title.lower()}_body", markup=False)
 
     def _body_id(self) -> str:
         return f"{self.title.lower()}_body"
@@ -222,7 +222,7 @@ class FailuresSection(Vertical):
 
     def compose(self) -> ComposeResult:
         yield Static("FAILURES", classes="sidebar-section-header")
-        yield Static(self._failure, id="failures_body")
+        yield Static(self._failure, id="failures_body", markup=False)
 
     def set_failure(self, summary: str, error_code: str) -> None:
         self._failure = f"{error_code}: {summary}"

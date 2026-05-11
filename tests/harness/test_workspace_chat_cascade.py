@@ -13,4 +13,4 @@ async def test_cascade_removes_directory(tmp_path: Path):
     ))
     res = await store.cascade_delete_for_workspace("w42")
     assert len(res) == 1
-    assert not (tmp_path / "chats" / "w42").exists()
+    assert not (tmp_path / "workspaces" / "w42" / "chats").exists()

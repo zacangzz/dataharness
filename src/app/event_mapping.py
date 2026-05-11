@@ -3,14 +3,15 @@ from __future__ import annotations
 from app.events import (
     AppApprovalRequired, AppChatHistoryLoaded, AppCommandCompleted,
     AppCommandProgress, AppCommandStarted, AppDoctorFinding,
-    AppDoctorReportReady, AppEvent, AppFinalMessage, AppRaw,
-    AppRuntimeDelta, AppStatusChanged, AppTurnCancelled,
-    AppTurnFailed, AppTurnStarted,
+    AppDoctorReportReady, AppEvent, AppFinalMessage, AppModeHandoff,
+    AppRaw, AppRuntimeDelta, AppStatusChanged, AppToolCallExecuted,
+    AppTurnCancelled, AppTurnPaused, AppTurnFailed, AppTurnStarted,
 )
 from harness.events import (
     ApprovalRequired, ChatHistoryLoaded, CommandCompleted, CommandProgress,
     CommandStarted, DoctorFinding, DoctorReportReady, FinalMessage, HarnessEvent,
-    RuntimeDelta, StatusChanged, TurnCancelled, TurnFailed, TurnStarted,
+    ModeHandoffAccepted, RuntimeDelta, StatusChanged, ToolCallExecuted,
+    TurnCancelled, TurnFailed, TurnPaused, TurnStarted,
 )
 
 
@@ -26,6 +27,18 @@ def to_app_event(ev: HarnessEvent) -> AppEvent:
         return AppTurnFailed(**base, failure_summary=ev.failure_summary, error_code=ev.error_code, details=ev.details)
     if isinstance(ev, TurnCancelled):
         return AppTurnCancelled(**base, reason=ev.reason, cancelled_at=ev.cancelled_at)
+    if isinstance(ev, TurnPaused):
+        return AppTurnPaused(
+            **base, reason=ev.reason,
+            pending_tool_calls=ev.pending_tool_calls, partial_text=ev.partial_text,
+        )
+    if isinstance(ev, ModeHandoffAccepted):
+        return AppModeHandoff(**base, target_mode=ev.to_mode, reason=ev.reason)
+    if isinstance(ev, ToolCallExecuted):
+        return AppToolCallExecuted(
+            **base, tool_name=ev.tool_name, arguments=ev.arguments,
+            result=ev.result, iteration=ev.iteration,
+        )
     if isinstance(ev, StatusChanged):
         return AppStatusChanged(**base, snapshot=ev.snapshot.model_dump(mode="json"))
     if isinstance(ev, ChatHistoryLoaded):

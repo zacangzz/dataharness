@@ -39,7 +39,7 @@ async def collect(agen):
 async def test_first_user_message_lazy_creates_chat(orch, tmp_path):
     state = make_state()
     summary = await orch.create_chat(workspace_id="w1", title=None)
-    chat_dir = tmp_path / "chats" / "w1" / summary.chat_id
+    chat_dir = tmp_path / "workspaces" / "w1" / "chats" / summary.chat_id
     assert not chat_dir.exists()
     await collect(orch.run_turn(
         state, workspace_dir=tmp_path, chat_id=summary.chat_id, user_input="hi",

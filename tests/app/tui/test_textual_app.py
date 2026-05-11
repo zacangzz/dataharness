@@ -70,6 +70,22 @@ async def test_conversation_and_sidebar_have_real_scroll_ranges(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_copy_action_copies_focused_text_when_no_selection(tmp_path):
+    app = DataHarnessApp(workspace_dir=tmp_path / "w" / "w_0001")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        conversation = app.query_one("#conversation", ConversationPane)
+        conversation.append_user("question to copy")
+        conversation.append_assistant("answer to copy")
+        app.set_focus(conversation)
+
+        await pilot.press("ctrl+c")
+
+        assert "question to copy" in app._clipboard
+        assert "answer to copy" in app._clipboard
+
+
+@pytest.mark.asyncio
 async def test_status_bar_shows_runtime_status(tmp_path):
     app = DataHarnessApp(workspace_dir=tmp_path / "w" / "w_0001")
     async with app.run_test() as pilot:

@@ -1,16 +1,24 @@
-import asyncio
-
 import pytest
 
-from harness.events import (
-    ApprovalRequired, ApprovalResolved, ArtifactsReady, PlanReady,
-    StepCompleted, StepTaskStatusChanged, StepTaskSubmitted,
-)
+from harness.command_registry import CommandContext
 from harness.control import ApprovalRecord, RunStateRecord
 from harness.orchestrator import Orchestrator
 
 
-class _NoRuntime: ...
+_PLAN_ARGS = {
+    "goal": "compare A and B",
+    "steps": [
+        {
+            "purpose": "Compute comparison.",
+            "code": (
+                "from pathlib import Path\n"
+                "Path('output.txt').write_text('A,1\\nB,2\\n')\n"
+            ),
+            "declared_inputs": [],
+            "expected_outputs": ["output.txt"],
+        }
+    ],
+}
 
 
 def make_state():
@@ -26,24 +34,26 @@ async def collect(agen):
     return [ev async for ev in agen]
 
 
-async def test_compare_input_emits_planready_then_approvalrequired(orch, tmp_path):
+async def _dispatch_plan(orch: Orchestrator, state: RunStateRecord):
+    handler = orch.registry.get_handler("plan_analysis")
+    ctx = CommandContext(
+        workspace_id="w1", chat_id="c1", run_id=state.run_id,
+        has_pending_approval=False, has_pending_clarification=False,
+    )
+    return await collect(handler(ctx, _PLAN_ARGS))
+
+
+async def test_plan_analysis_emits_planready_then_approvalrequired(orch):
     state = make_state()
-    events = await collect(orch.run_turn(
-        state, workspace_dir=tmp_path, chat_id="c1",
-        user_input="please compare A and B",
-    ))
+    events = await _dispatch_plan(orch, state)
     names = [e.event_name for e in events]
     assert "PlanReady" in names
     assert "ApprovalRequired" in names
-    assert names[-1] == "ApprovalRequired"  # paused on approval
 
 
 async def test_resume_approved_step_emits_submitted_status_completed(orch, tmp_path):
     state = make_state()
-    events = await collect(orch.run_turn(
-        state, workspace_dir=tmp_path, chat_id="c1",
-        user_input="please compare A and B",
-    ))
+    events = await _dispatch_plan(orch, state)
     plan_event = next(e for e in events if e.event_name == "PlanReady")
     appr_event = next(e for e in events if e.event_name == "ApprovalRequired")
     approval = ApprovalRecord(

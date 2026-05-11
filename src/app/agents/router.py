@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Callable
+
 from pydantic import BaseModel
 
 from observability import Telemetry, resolve_telemetry_dir
@@ -15,31 +17,37 @@ AgentModeDecision = AgentModeRequest
 
 
 class AgentModeRouter:
-    def __init__(self, telemetry: Telemetry | None = None) -> None:
+    def __init__(
+        self,
+        telemetry: Telemetry | None = None,
+        *,
+        enable_llm_classifier: bool = False,
+        llm_classifier: Callable[[str], str | None] | None = None,
+    ) -> None:
         self.telemetry = telemetry or Telemetry(resolve_telemetry_dir())
+        self.enable_llm_classifier = enable_llm_classifier
+        self.llm_classifier = llm_classifier
+        self._classifier_cache: dict[str, str] = {}
 
     analysis_terms = {
-        "analyze",
-        "analysis",
-        "compare",
-        "calculate",
-        "compute",
-        "chart",
-        "plot",
-        "correlation",
-        "regression",
-        "forecast",
-        "summary",
+        # original
+        "analyze", "analysis", "compare", "calculate", "compute",
+        "chart", "plot", "correlation", "regression", "forecast", "summary",
+        # aggregations / counts
+        "count", "total", "sum", "average", "mean", "median",
+        "max", "maximum", "min", "minimum",
+        # grouping / filtering / shape
+        "group", "filter", "top", "bottom", "distinct", "unique", "aggregate",
+        "rank", "percent", "percentage", "ratio", "trend", "distribution",
+        "histogram",
     }
+    analysis_phrases = (
+        "how many", "how much", "number of", "breakdown of", "rate of",
+        "share of", "what percent", "what percentage",
+    )
     knowledge_terms = {
-        "remember",
-        "save",
-        "note",
-        "preference",
-        "definition",
-        "means",
-        "teach",
-        "metric",
+        "remember", "save", "note", "preference", "definition",
+        "means", "teach", "metric",
     }
 
     def request_mode(self, user_text: str) -> AgentModeRequest:
@@ -48,17 +56,44 @@ class AgentModeRouter:
     def route(self, user_text: str) -> AgentModeRequest:
         normalized = user_text.lower()
         words = set(normalized.replace("?", " ").replace(",", " ").split())
+
         if words & self.knowledge_terms:
             decision = AgentModeRequest(mode="knowledge", reason="knowledge_capture_intent")
             self._emit_decision(decision, user_text)
             return decision
-        if words & self.analysis_terms:
+
+        if words & self.analysis_terms or self._phrase_match(normalized):
             decision = AgentModeRequest(mode="analyst", reason="analysis_intent")
             self._emit_decision(decision, user_text)
             return decision
+
+        classified = self._classify_with_llm(user_text)
+        if classified is not None and classified != "interaction":
+            decision = AgentModeRequest(mode=classified, reason="llm_classifier")
+            self._emit_decision(decision, user_text)
+            return decision
+
         decision = AgentModeRequest(mode="interaction", reason="front_door_default")
         self._emit_decision(decision, user_text)
         return decision
+
+    def _phrase_match(self, normalized: str) -> bool:
+        return any(phrase in normalized for phrase in self.analysis_phrases)
+
+    def _classify_with_llm(self, user_text: str) -> str | None:
+        if not self.enable_llm_classifier or self.llm_classifier is None:
+            return None
+        cached = self._classifier_cache.get(user_text)
+        if cached is not None:
+            return cached
+        try:
+            result = self.llm_classifier(user_text)
+        except Exception:  # noqa: BLE001
+            return None
+        if result in {"interaction", "analyst", "knowledge", "clarification"}:
+            self._classifier_cache[user_text] = result
+            return result
+        return None
 
     def _emit_decision(self, decision: AgentModeRequest, user_text: str) -> None:
         self.telemetry.emit(

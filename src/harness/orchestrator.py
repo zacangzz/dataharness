@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+import re
+from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -14,7 +15,7 @@ from harness.chat import (
 from harness.command_registry import (
     ArgSpec, CommandContext, HarnessCommandDescriptor, HarnessCommandRegistry, HelpResult,
 )
-from harness.context import ContextManager
+from harness.context import ContextManager, list_workspace_files, read_file_schema
 from harness.control import (
     ApprovalRecord, DoctorReport, ModeSwitchEvent, Plan, PlanStep, PromptPackage,
     RunState, RunStateRecord, SessionConfig, StepContract, TmpAction,
@@ -26,9 +27,10 @@ from harness.events import (
     ChatHistoryLoaded,
     CommandCompleted, CommandStarted, FinalMessage, HarnessEvent, ModeActivated,
     PlanReady, PromptBuilt, RuntimeDelta, RuntimeStatusChanged, StatusChanged,
-    StepCompleted, StepTaskStatusChanged, StepTaskSubmitted, TurnCancelled,
-    TurnFailed, TurnStarted,
+    ModeHandoffAccepted, StepCompleted, StepTaskStatusChanged, StepTaskSubmitted,
+    ToolCallExecuted, TurnCancelled, TurnFailed, TurnPaused, TurnStarted,
 )
+from harness.knowledge_intents import KNOWLEDGE_INTENTS, handle_knowledge_intent
 from harness.exceptions import ChatNotFound, RunAlreadyActive, WorkspaceSwitchBlocked
 from harness.persistence import HarnessPersistence
 from harness.state_machine import HarnessStateMachine
@@ -39,6 +41,93 @@ from runtime.protocol import Runtime
 from runtime.types import RuntimeMessage, RuntimeRequest
 from worker.executor import PythonStepExecutor
 from worker.models import PermissionEnvelope, ResourceLimits, StepExecutionRequest
+from worker.policy import WorkerPolicyValidator
+
+_ASSISTANT_DRAFT_TAG_RE = re.compile(r"\[/?ASSISTANT_DRAFT\]\s*")
+_TURN_MARKER_RE = re.compile(
+    r"(?:\[/?(?:start|end)_of_turn\]|/?(?:start|end)_of_turn>|<\s*/?(?:start|end)_of_turn\s*>)",
+    re.IGNORECASE,
+)
+_READ_FILE_CHAR_CAP = 32_000
+_PLAN_ALLOWED_PACKAGES = ["pathlib", "csv", "json", "math", "statistics", "pandas", "numpy"]
+
+
+def _sanitize_assistant_text(text: str) -> str:
+    """Remove model/control markers that should never become user-visible chat text."""
+    cleaned = _ASSISTANT_DRAFT_TAG_RE.sub("", text)
+    cleaned = _TURN_MARKER_RE.sub("", cleaned)
+    return cleaned.strip()
+
+
+def _read_workspace_file(
+    workspace_dir: Path, rel_path: str, *,
+    max_bytes: int = 65536, encoding: str = "utf-8",
+) -> dict[str, Any]:
+    """Read a workspace-relative file. Enforces workspace boundary, byte cap,
+    and char cap to protect context window."""
+    try:
+        wd = workspace_dir.resolve()
+        target = (wd / rel_path).resolve()
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"invalid path: {exc}"}
+    if wd != target and wd not in target.parents:
+        return {"error": "path escapes workspace"}
+    if not target.exists() or not target.is_file():
+        return {"error": "not a file"}
+    size = target.stat().st_size
+    cap = max(1, int(max_bytes))
+    try:
+        data = target.read_bytes()[:cap]
+        content = data.decode(encoding)
+    except UnicodeDecodeError:
+        return {"path": rel_path, "size_bytes": size, "error": "binary_file"}
+    truncated = size > cap
+    truncation_reason = "max_bytes" if truncated else None
+    if len(content) > _READ_FILE_CHAR_CAP:
+        content = content[:_READ_FILE_CHAR_CAP]
+        truncated = True
+        truncation_reason = "token_budget"
+    return {
+        "path": rel_path,
+        "size_bytes": size,
+        "truncated": truncated,
+        "truncation_reason": truncation_reason,
+        "content": content,
+    }
+
+
+def _artifact_path(workspace_dir: Path, artifact: Path) -> Path:
+    return artifact if artifact.is_absolute() else workspace_dir / artifact
+
+
+def _read_short_text(path: Path, *, max_chars: int = 2000) -> str | None:
+    try:
+        if not path.exists() or not path.is_file():
+            return None
+        data = path.read_bytes()[: max_chars * 4]
+        return data.decode("utf-8", errors="replace")[:max_chars].strip()
+    except OSError:
+        return None
+
+
+def _summarize_step_execution(workspace_dir: Path, envelope) -> str:
+    status = getattr(envelope.status, "status", "")
+    if status != "completed":
+        detail = (envelope.stderr or "").strip() or str(envelope.diagnostics.get("failure_summary") or "").strip()
+        if not detail:
+            detail = (envelope.stdout or "").strip()
+        return f"Analysis failed during execution: {detail or status or 'unknown worker failure'}"
+
+    if envelope.artifacts:
+        artifact = _artifact_path(workspace_dir, envelope.artifacts[0])
+        content = _read_short_text(artifact)
+        if content:
+            return f"Analysis complete: {content}\n\nArtifact: {artifact}"
+        return f"Analysis complete. Artifact: {artifact}"
+    stdout = (envelope.stdout or "").strip()
+    if stdout:
+        return f"Analysis complete: {stdout}"
+    return "Analysis complete."
 
 
 class Orchestrator:
@@ -74,6 +163,7 @@ class Orchestrator:
         self._run_lock = asyncio.Lock()
         self._status_broker: StatusBroker | None = None
         self._pending_contracts: dict[tuple[str, str], StepContract] = {}
+        self._pending_plans: dict[str, Plan] = {}
         self.chat_store = ChatStore(self.app_root)
         self.request_builder: RuntimeRequestBuilder | None = None
         self._runtime_lock = asyncio.Lock()
@@ -146,6 +236,13 @@ class Orchestrator:
             ]),
             ("workspace_status", []),
             ("workspace_inventory", []),
+            ("list_files", []),
+            ("inspect_file", [ArgSpec(name="path", type="path", required=True, description="workspace-relative file path", example="data/sales.csv")]),
+            ("read_file", [
+                ArgSpec(name="path", type="path", required=True, description="workspace-relative file path", example="data/notes.md"),
+                ArgSpec(name="max_bytes", type="int", required=False, description="byte cap for content (default 65536)", example="65536"),
+                ArgSpec(name="encoding", type="str", required=False, description="text encoding (default utf-8)", example="utf-8"),
+            ]),
         ]:
             R.register(
                 HarnessCommandDescriptor(
@@ -156,6 +253,37 @@ class Orchestrator:
                 ),
                 self._make_workspace_handler(n),
             )
+        R.register(
+            HarnessCommandDescriptor(
+                name="plan_analysis", slash_alias="/plan_analysis",
+                short_description="Build a Python analysis plan and request user approval",
+                arguments=[
+                    ArgSpec(name="goal", type="str", required=True,
+                            description="one-line user goal", example="count customers"),
+                    ArgSpec(name="steps", type="json", required=True,
+                            description="list of {purpose,code,declared_inputs,expected_outputs}",
+                            example="[{\"purpose\":\"...\",\"code\":\"...\"}]"),
+                ],
+                available=True, affected_resource="plan",
+                expected_event_types=["CommandStarted", "PlanReady", "ApprovalRequired", "CommandCompleted"],
+                example_usage='/plan_analysis "count customers" [{...}]',
+            ),
+            self._handle_plan_analysis,
+        )
+        R.register(
+            HarnessCommandDescriptor(
+                name="request_execution", slash_alias="/request_execution",
+                short_description="Re-emit ApprovalRequired for an existing pending step",
+                arguments=[
+                    ArgSpec(name="plan_id", type="str", required=True, description="plan id", example="plan_..."),
+                    ArgSpec(name="step_id", type="step_id", required=True, description="step id", example="step_1"),
+                ],
+                available=True, affected_resource="step",
+                expected_event_types=["CommandStarted", "ApprovalRequired", "CommandCompleted"],
+                example_usage="/request_execution plan_x step_1",
+            ),
+            self._handle_request_execution,
+        )
         R.register(
             HarnessCommandDescriptor(
                 name="cancel_run", slash_alias="/cancel_run",
@@ -901,6 +1029,32 @@ class Orchestrator:
                 elif command_name == "workspace_inventory":
                     workspaces = await self.list_workspaces()
                     result = {"workspaces": [w.model_dump(mode="json") for w in workspaces]}
+                elif command_name == "list_files":
+                    workspace_dir = self.workspace_manager.workspaces_dir / (workspace_id or ctx.workspace_id or "")
+                    files = list_workspace_files(workspace_dir) if workspace_dir.exists() else []
+                    result = {"workspace_id": workspace_id or ctx.workspace_id, "files": files}
+                elif command_name == "inspect_file":
+                    workspace_dir = self.workspace_manager.workspaces_dir / (workspace_id or ctx.workspace_id or "")
+                    path_arg = str(args.get("path") or "")
+                    if not workspace_dir.exists():
+                        result = {"error": "workspace not found"}
+                    elif not path_arg:
+                        result = {"error": "missing required arg 'path'"}
+                    else:
+                        result = read_file_schema(workspace_dir, path_arg)
+                elif command_name == "read_file":
+                    workspace_dir = self.workspace_manager.workspaces_dir / (workspace_id or ctx.workspace_id or "")
+                    path_arg = str(args.get("path") or "")
+                    if not workspace_dir.exists():
+                        result = {"error": "workspace not found"}
+                    elif not path_arg:
+                        result = {"error": "missing required arg 'path'"}
+                    else:
+                        result = _read_workspace_file(
+                            workspace_dir, path_arg,
+                            max_bytes=int(args.get("max_bytes") or 65536),
+                            encoding=str(args.get("encoding") or "utf-8"),
+                        )
             except Exception as exc:
                 result = {"error": f"{type(exc).__name__}: {exc}"}
             yield CommandCompleted(
@@ -1019,7 +1173,285 @@ class Orchestrator:
                 compaction_count=snapshot.compaction_count,
             )
 
+    # ---- agentic-turn intents ----
+    _TERMINAL_INTENTS = frozenset({"answer_directly", "respond_to_user", "request_clarification"})
+    _HANDOFF_INTENTS = {
+        "handoff_to_analyst": "analyst",
+        "handoff_to_knowledge": "knowledge",
+        "handoff_to_clarification": "clarification",
+    }
+
     # ---- public async API ----
+    async def run_agentic_turn(
+        self,
+        state: RunStateRecord,
+        *,
+        workspace_dir: Path,
+        chat_id: str,
+        user_input: str,
+        requested_mode: str,
+        prompt_provider: "Callable[[str], str]",
+        max_iterations: int = 4,
+    ) -> AsyncIterator[HarnessEvent]:
+        """Bounded multi-iteration turn: stream → tool_call → dispatch → re-stream.
+
+        Owns the full agentic control loop per spec §6.3 / §8.1. The application
+        layer supplies the initial requested_mode and a `prompt_provider(mode)`
+        callback that returns the prompt text for any mode (handoff destinations
+        included). The harness handles tool dispatch, retry, mode handoff
+        acceptance, approval-gate termination, and follow-up message construction.
+        """
+        active_mode = requested_mode
+        prompt_text = prompt_provider(active_mode)
+        durable = await self._build_durable_context_block(state.workspace_id, workspace_dir)
+
+        current_input = user_input
+        retried_empty = False
+        retried_malformed = False
+        handoff_used = False
+        first_iter = True
+
+        for iteration in range(max_iterations):
+            buffer: list[str] = []
+            tool_calls: list[dict[str, Any]] = []
+            paused_tool_calls: list[dict[str, Any]] = []
+            empty_failed = False
+            malformed_failed = False
+            approval_pending = False
+
+            async for ev in self.run_turn(
+                state, workspace_dir=workspace_dir, chat_id=chat_id,
+                user_input=current_input, requested_mode=active_mode,
+                prompt_text=prompt_text, durable_context=durable,
+                persist_user_message=first_iter,
+            ):
+                yield ev
+                if isinstance(ev, RuntimeDelta):
+                    if ev.delta_type == "text":
+                        buffer.append(ev.text or "")
+                    elif ev.delta_type == "tool_call" and ev.tool_call:
+                        tool_calls.append(ev.tool_call)
+                elif isinstance(ev, TurnPaused):
+                    paused_tool_calls = list(ev.pending_tool_calls)
+                elif isinstance(ev, ApprovalRequired):
+                    approval_pending = True
+                elif isinstance(ev, TurnFailed):
+                    if ev.error_code == "empty_output":
+                        empty_failed = True
+                    else:
+                        msg = (ev.failure_summary or "").lower()
+                        if "malformed tool" in msg or "tool_call" in msg or "modelbehavior" in msg:
+                            malformed_failed = True
+
+            if approval_pending:
+                return
+
+            effective = paused_tool_calls or tool_calls
+            final_text = "".join(buffer).strip()
+
+            # Mode handoff (App layer routed initial mode; this is mid-turn)
+            handoff_target = self._detect_handoff(effective)
+            if handoff_target and not handoff_used and handoff_target != active_mode:
+                handoff_used = True
+                yield ModeHandoffAccepted(
+                    ts=datetime.now(UTC), workspace_id=state.workspace_id,
+                    chat_id=chat_id, run_id=state.run_id,
+                    from_mode=active_mode, to_mode=handoff_target, reason="model_requested",
+                )
+                active_mode = handoff_target
+                prompt_text = prompt_provider(handoff_target)
+                state = state.model_copy(update={"active_agent_mode": handoff_target})
+                current_input = user_input  # re-run original under new mode
+                first_iter = False
+                continue
+
+            if effective and self._has_dispatchable(effective):
+                results: list[tuple[dict[str, Any], dict[str, Any]]] = []
+                terminal = False
+                dispatch_approval = False
+                for tc in effective:
+                    name = str(tc.get("name") or "")
+                    args = dict(tc.get("arguments") or {})
+                    if name in self._TERMINAL_INTENTS or name in self._HANDOFF_INTENTS:
+                        terminal = True
+                        continue
+                    result = {}
+                    async for sub_ev in self._dispatch_tool_call(state, name, args):
+                        yield sub_ev
+                        if isinstance(sub_ev, CommandCompleted):
+                            result = sub_ev.result
+                        if isinstance(sub_ev, ApprovalRequired):
+                            dispatch_approval = True
+                    results.append((tc, result))
+                    yield ToolCallExecuted(
+                        ts=datetime.now(UTC), workspace_id=state.workspace_id,
+                        chat_id=chat_id, run_id=state.run_id,
+                        tool_name=name, arguments=args, result=result, iteration=iteration,
+                    )
+                if dispatch_approval:
+                    return  # approval gate — wait for user via resume_approved_step
+                if terminal or not results:
+                    return
+                current_input = self._format_tool_followup(final_text, results)
+                first_iter = False
+                continue
+
+            if empty_failed and not retried_empty:
+                retried_empty = True
+                current_input = (
+                    f"{user_input}\n\n"
+                    "(Earlier reply was empty. Provide a brief direct answer or, "
+                    "if you need workspace data, emit one <tool_call>.)"
+                )
+                first_iter = False
+                continue
+
+            if malformed_failed and not retried_malformed:
+                retried_malformed = True
+                current_input = (
+                    f"{user_input}\n\n"
+                    "(Your previous response contained a malformed <tool_call> block. "
+                    "Either answer directly without a tool_call, or emit exactly one valid "
+                    'block: <tool_call>{"name":"<tool>","arguments":{...}}</tool_call> with '
+                    "strict JSON — no literal newlines/tabs in string values, no extra keys.)"
+                )
+                first_iter = False
+                continue
+
+            return
+
+    async def _build_durable_context_block(self, workspace_id: str, workspace_dir: Path) -> str:
+        status_text = f"WORKSPACE: {workspace_id}"
+        try:
+            snapshot = await self.status_snapshot(workspace_id=workspace_id)
+            status_text = (
+                f"WORKSPACE: {snapshot.workspace_id} "
+                f"(chat: {snapshot.chat_id or '-'}, run_state: {snapshot.run_state}, "
+                f"runtime: {snapshot.runtime_status}, mode: {snapshot.active_mode})"
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+        ctx_window = 4096
+        if self.runtime is not None:
+            try:
+                ctx_window = await self.runtime.context_window()
+            except Exception:  # noqa: BLE001
+                pass
+        durable_budget = max(int(ctx_window * 0.30), 256)
+        if self.context_manager is None or not hasattr(self.context_manager, "build"):
+            return status_text
+        return await self.context_manager.build(
+            workspace_dir, token_budget=durable_budget, status_text=status_text,
+        )
+
+    def _has_dispatchable(self, tool_calls: list[dict[str, Any]]) -> bool:
+        for tc in tool_calls:
+            name = str(tc.get("name") or "")
+            if name and name not in self._TERMINAL_INTENTS and name not in self._HANDOFF_INTENTS:
+                return True
+        return any(str(tc.get("name") or "") == "request_clarification" for tc in tool_calls)
+
+    def _detect_handoff(self, tool_calls: list[dict[str, Any]]) -> str | None:
+        for tc in tool_calls:
+            target = self._HANDOFF_INTENTS.get(str(tc.get("name") or ""))
+            if target is not None:
+                return target
+        return None
+
+    async def _dispatch_tool_call(
+        self, state: RunStateRecord, name: str, args: dict[str, Any],
+    ) -> AsyncIterator[HarnessEvent]:
+        """Dispatch one tool_call. Yields all handler events; the loop body
+        captures `CommandCompleted.result` and detects `ApprovalRequired`."""
+        if not name:
+            yield CommandCompleted(
+                ts=datetime.now(UTC), workspace_id=state.workspace_id, run_id=state.run_id,
+                command="", result={"error": "missing tool name"},
+            )
+            return
+        if name in self._TERMINAL_INTENTS or name in self._HANDOFF_INTENTS:
+            yield CommandCompleted(
+                ts=datetime.now(UTC), workspace_id=state.workspace_id, run_id=state.run_id,
+                command=name, result={"ok": True, "note": f"{name} consumed by control loop"},
+            )
+            return
+
+        if name in KNOWLEDGE_INTENTS:
+            manager = getattr(self, "knowledge_manager", None)
+            if manager is None:
+                yield CommandCompleted(
+                    ts=datetime.now(UTC), workspace_id=state.workspace_id, run_id=state.run_id,
+                    command=name, result={"error": "knowledge manager unavailable"},
+                )
+                return
+            try:
+                rec = handle_knowledge_intent(manager, tool_call={"name": name, "arguments": args})
+                payload = rec.model_dump(mode="json") if hasattr(rec, "model_dump") else str(rec)
+                yield CommandCompleted(
+                    ts=datetime.now(UTC), workspace_id=state.workspace_id, run_id=state.run_id,
+                    command=name, result={"ok": True, "record": payload},
+                )
+            except Exception as exc:  # noqa: BLE001
+                yield CommandCompleted(
+                    ts=datetime.now(UTC), workspace_id=state.workspace_id, run_id=state.run_id,
+                    command=name, result={"error": f"{type(exc).__name__}: {exc}"},
+                )
+            return
+
+        try:
+            handler = self.registry.get_handler(name)
+        except KeyError:
+            yield CommandCompleted(
+                ts=datetime.now(UTC), workspace_id=state.workspace_id, run_id=state.run_id,
+                command=name, result={"error": f"unknown tool: {name}"},
+            )
+            return
+
+        try:
+            validated = self.registry.validate(name, args)
+        except Exception as exc:  # noqa: BLE001
+            yield CommandCompleted(
+                ts=datetime.now(UTC), workspace_id=state.workspace_id, run_id=state.run_id,
+                command=name, result={"error": f"invalid arguments: {exc}"},
+            )
+            return
+
+        ctx = CommandContext(
+            workspace_id=state.workspace_id,
+            chat_id=getattr(state, "chat_id", None),
+            run_id=state.run_id,
+            has_pending_approval=False, has_pending_clarification=False,
+        )
+        try:
+            async for ev in handler(ctx, validated):
+                yield ev
+        except Exception as exc:  # noqa: BLE001
+            yield CommandCompleted(
+                ts=datetime.now(UTC), workspace_id=state.workspace_id, run_id=state.run_id,
+                command=name, result={"error": f"{type(exc).__name__}: {exc}"},
+            )
+
+    @staticmethod
+    def _format_tool_followup(
+        assistant_partial: str,
+        results: list[tuple[dict[str, Any], dict[str, Any]]],
+    ) -> str:
+        import json as _json
+        parts: list[str] = []
+        cleaned = _sanitize_assistant_text(assistant_partial or "")
+        if cleaned:
+            parts.append(f"[ASSISTANT_DRAFT]\n{cleaned}\n[/ASSISTANT_DRAFT]")
+        for tc, result in results:
+            tool_name = tc.get("name") or "?"
+            try:
+                payload = _json.dumps(result, default=str, ensure_ascii=False)
+            except Exception:  # noqa: BLE001
+                payload = str(result)
+            parts.append(f"[TOOL_RESULT name={tool_name}]\n{payload}\n[/TOOL_RESULT]")
+        parts.append("Use the tool result(s) above to answer the user's original question concisely.")
+        return "\n\n".join(parts)
+
     async def run_turn(
         self,
         state: RunStateRecord,
@@ -1029,6 +1461,8 @@ class Orchestrator:
         user_input: str,
         requested_mode: str | None = None,
         prompt_text: str | None = None,
+        durable_context: str = "",
+        persist_user_message: bool = True,
     ) -> AsyncIterator[HarnessEvent]:
         run_id = state.run_id
         cancel = await self._acquire_run(run_id)
@@ -1056,12 +1490,15 @@ class Orchestrator:
                 message_count=chat_record.message_count, token_estimate=chat_record.token_estimate,
                 source="new" if chat_record.message_count == 0 else "resumed",
             )
-            # Append user message (lazy flush to disk)
-            await self.chat_store.append_message(chat_id, ChatMessage(
-                message_id=user_msg_id, role="user", text=user_input,
-                ts=datetime.now(UTC), turn_id=turn_id, active_mode=active_mode,
-                token_estimate=max(len(user_input) // 4, 1),
-            ))
+            # Append user message (lazy flush to disk).
+            # Skipped for synthetic tool-followup inputs from run_agentic_turn
+            # to avoid polluting durable chat history.
+            if persist_user_message:
+                await self.chat_store.append_message(chat_id, ChatMessage(
+                    message_id=user_msg_id, role="user", text=user_input,
+                    ts=datetime.now(UTC), turn_id=turn_id, active_mode=active_mode,
+                    token_estimate=max(len(user_input) // 4, 1),
+                ))
             if cancel.is_set():
                 yield TurnCancelled(
                     ts=datetime.now(UTC), workspace_id=state.workspace_id, chat_id=chat_id,
@@ -1069,21 +1506,9 @@ class Orchestrator:
                 )
                 return
 
-            # Plan/approval branch for analyst mode
-            if active_mode == "analyst" and "compare" in user_input.lower():
-                plan, contract = self._build_v1_analysis_plan(state, user_input)
-                yield PlanReady(
-                    ts=datetime.now(UTC), workspace_id=state.workspace_id, chat_id=chat_id, run_id=run_id,
-                    plan_id=plan.id, plan=plan.model_dump(mode="json"),
-                )
-                yield ApprovalRequired(
-                    ts=datetime.now(UTC), workspace_id=state.workspace_id, chat_id=chat_id, run_id=run_id,
-                    plan_id=plan.id, step_id="step_1",
-                    step=plan.steps[0].model_dump(mode="json"),
-                    prompt="Approval required before running code.",
-                )
-                self._pending_contracts[(state.run_id, "step_1")] = contract
-                return
+            # Plans are built via the model emitting `<tool_call>{"name":"plan_analysis",...}</tool_call>`
+            # in analyst mode. The App-layer TurnRunner dispatches that to `_handle_plan_analysis`,
+            # which yields PlanReady + ApprovalRequired and stashes the contract. No keyword triggers.
 
             # Runtime stream
             if self.runtime is None:
@@ -1107,7 +1532,6 @@ class Orchestrator:
                 self.request_builder = RuntimeRequestBuilder(
                     context_window=ctx_window, chat_format=runtime_chat_format,
                 )
-            durable_context = ""  # plan 3c plumbs ContextManager output here
             chat_record_after_user = await self.chat_store.view_chat(chat_id)
             messages = self.request_builder.build_messages(
                 active_mode_prompt=prompt_text or "You are the harness.",
@@ -1145,6 +1569,7 @@ class Orchestrator:
             )
 
             buffer: list[str] = []
+            collected_tool_calls: list[dict[str, Any]] = []
             usage: dict[str, int] = {}
             async with self._runtime_lock:
                 async for ev in self.runtime.stream(request):
@@ -1166,6 +1591,8 @@ class Orchestrator:
                             request_id=ev.request_id, seq=ev.seq, delta_type="reasoning", text=ev.text, tool_call=None,
                         )
                     elif ev.type == "tool_call":
+                        if ev.tool_call is not None:
+                            collected_tool_calls.append(ev.tool_call)
                         yield RuntimeDelta(
                             ts=datetime.now(UTC), workspace_id=state.workspace_id, chat_id=chat_id, run_id=run_id,
                             request_id=ev.request_id, seq=ev.seq, delta_type="tool_call",
@@ -1182,19 +1609,41 @@ class Orchestrator:
                         )
                         return
 
-            # Persist assistant message
             assistant_text = "".join(buffer)
+
+            # Empty buffer + pending tool_calls → pause for App-layer dispatch.
+            if not assistant_text.strip() and collected_tool_calls:
+                yield TurnPaused(
+                    ts=datetime.now(UTC), workspace_id=state.workspace_id, chat_id=chat_id, run_id=run_id,
+                    reason="awaiting_tool_dispatch",
+                    pending_tool_calls=collected_tool_calls,
+                    partial_text=assistant_text,
+                )
+                return
+
+            # Empty buffer + no tool_calls → fail loudly; do NOT persist hollow row.
+            if not assistant_text.strip():
+                yield TurnFailed(
+                    ts=datetime.now(UTC), workspace_id=state.workspace_id, chat_id=chat_id, run_id=run_id,
+                    failure_summary="Runtime produced no output.",
+                    error_code="empty_output",
+                    details={"usage": usage},
+                )
+                return
+
+            # Persist assistant message after removing leaked control markers.
             assistant_msg_id = f"asg_{uuid4().hex[:12]}"
+            persisted_text = _sanitize_assistant_text(assistant_text) or assistant_text
             await self.chat_store.append_message(chat_id, ChatMessage(
                 message_id=assistant_msg_id,
-                role="assistant", text=assistant_text, ts=datetime.now(UTC),
+                role="assistant", text=persisted_text, ts=datetime.now(UTC),
                 turn_id=turn_id, active_mode=active_mode,
-                token_estimate=max(len(assistant_text) // 4, 1),
+                token_estimate=max(len(persisted_text) // 4, 1),
             ))
             yield FinalMessage(
                 ts=datetime.now(UTC), workspace_id=state.workspace_id, chat_id=chat_id, run_id=run_id,
                 assistant_message_id=assistant_msg_id,
-                text=assistant_text, usage=usage,
+                text=persisted_text, usage=usage,
             )
         finally:
             await self._release_run(run_id)
@@ -1256,11 +1705,17 @@ class Orchestrator:
         *,
         workspace_dir: Path,
         state: RunStateRecord,
-        plan_payload: dict,
         contract_payload: dict,
         approval: ApprovalRecord,
+        plan_id: str | None = None,
+        plan_payload: dict | None = None,
     ) -> AsyncIterator[HarnessEvent]:
-        plan = Plan.model_validate(plan_payload)
+        pid = plan_id or (plan_payload or {}).get("id")
+        plan = self._pending_plans.get(pid) if pid else None
+        if plan is None:
+            if not plan_payload:
+                raise ValueError(f"no cached plan for plan_id {pid!r} and no plan_payload provided")
+            plan = Plan.model_validate(plan_payload)
         step_id = str(contract_payload.get("_step_id") or contract_payload.get("step_id") or "step_1")
         contract = self._pending_contracts.pop((state.run_id, step_id), None)
         if contract is None:
@@ -1312,11 +1767,13 @@ class Orchestrator:
             yield FinalMessage(
                 ts=datetime.now(UTC), workspace_id=state.workspace_id, run_id=state.run_id,
                 assistant_message_id=f"asg_{uuid4().hex[:12]}",
-                text=f"Analysis complete. See {envelope.artifacts[0] if envelope.artifacts else 'artifacts'}.",
+                text=_summarize_step_execution(workspace_dir, envelope),
                 usage={},
             )
         finally:
             await self._release_run(state.run_id)
+            if pid:
+                self._pending_plans.pop(pid, None)
 
     async def resume_with_clarification(
         self,
@@ -1346,46 +1803,172 @@ class Orchestrator:
             }
         return {"dispatch": True, "plan_id": plan.id}
 
-    def _build_v1_analysis_plan(self, state: RunStateRecord, user_input: str) -> tuple[Plan, StepContract]:
-        step = PlanStep(
-            id="step_1",
-            workspace_id=state.workspace_id,
-            plan_id=f"plan_{state.run_id}",
-            step_order=1,
-            purpose="Create a small evidence artifact for the requested analysis.",
-            kind="code",
-            declared_inputs=["data/input.csv"],
-            expected_outputs=["output.txt"],
-        )
-        plan = Plan(
-            id=f"plan_{state.run_id}",
-            workspace_id=state.workspace_id,
-            run_id=state.run_id,
-            goal=user_input,
-            steps=[step],
-            requires_code_execution=True,
-        )
-        contract = StepContract(
-            id=f"contract_{state.run_id}_step_1",
-            workspace_id=state.workspace_id,
-            run_id=state.run_id,
-            plan_id=plan.id,
-            step_id=step.id,
-            code="from pathlib import Path\nPath('output.txt').write_text('department,leavers\\nSales,1\\n')\n",
-            declared_inputs=["data/input.csv"],
-            workspace_paths={"workspace": "."},
-            permission_envelope={
-                "allowed_read_paths": ["data/input.csv"],
+    def _build_plan_from_arguments(
+        self,
+        state: RunStateRecord,
+        *,
+        goal: str,
+        steps: list[dict[str, Any]],
+    ) -> tuple[Plan, list[StepContract]]:
+        """Build a Plan + per-step StepContracts from validated tool_call arguments.
+
+        The step `code` text originates from the LLM (Layer 1). This method only
+        validates and packages — it does not execute. Worker dispatch happens
+        later via `resume_approved_step` after explicit user approval.
+        """
+        if not isinstance(steps, list) or not steps:
+            raise ValueError("plan_analysis requires non-empty 'steps' list")
+        plan_id = f"plan_{state.run_id}_{uuid4().hex[:6]}"
+        plan_steps: list[PlanStep] = []
+        contracts: list[StepContract] = []
+        for idx, raw in enumerate(steps, start=1):
+            if not isinstance(raw, dict):
+                raise ValueError(f"step #{idx}: expected object, got {type(raw).__name__}")
+            purpose = str(raw.get("purpose") or "").strip()
+            code = str(raw.get("code") or "")
+            declared_inputs = [str(p) for p in (raw.get("declared_inputs") or [])]
+            expected_outputs = [str(p) for p in (raw.get("expected_outputs") or ["result.txt"])]
+            if not purpose:
+                raise ValueError(f"step #{idx}: 'purpose' is required")
+            if not code or len(code) > 16384:
+                raise ValueError(f"step #{idx}: 'code' missing or exceeds 16KB")
+            for path in declared_inputs:
+                if path.startswith("/") or ".." in path.split("/"):
+                    raise ValueError(f"step #{idx}: input '{path}' must be workspace-relative")
+            permission_envelope = {
+                "allowed_read_paths": list(declared_inputs),
                 "registered_artifact_paths": [],
                 "allowed_write_roots": ["artifacts/tmp"],
-                "allowed_packages": ["pathlib"],
+                "allowed_packages": list(_PLAN_ALLOWED_PACKAGES),
                 "allow_network": False,
                 "allow_shell": False,
-            },
-            expected_output_contract={"files": ["output.txt"]},
-            run_metadata={"source": "deterministic_v1_analysis_plan"},
+            }
+            try:
+                WorkerPolicyValidator(
+                    Path("."),
+                    PermissionEnvelope(**permission_envelope),
+                ).validate_code_imports(code)
+            except Exception as exc:  # noqa: BLE001
+                raise ValueError(f"step #{idx}: {exc}") from exc
+
+            step_id = f"step_{idx}"
+            plan_steps.append(PlanStep(
+                id=step_id,
+                workspace_id=state.workspace_id,
+                plan_id=plan_id,
+                step_order=idx,
+                purpose=purpose,
+                kind="code",
+                declared_inputs=declared_inputs,
+                expected_outputs=expected_outputs,
+            ))
+            contracts.append(StepContract(
+                id=f"contract_{state.run_id}_{step_id}",
+                workspace_id=state.workspace_id,
+                run_id=state.run_id,
+                plan_id=plan_id,
+                step_id=step_id,
+                code=code,
+                declared_inputs=declared_inputs,
+                workspace_paths={"workspace": "."},
+                permission_envelope=permission_envelope,
+                expected_output_contract={"files": list(expected_outputs)},
+                run_metadata={"source": "plan_analysis_tool_call", "goal": goal},
+            ))
+        plan = Plan(
+            id=plan_id,
+            workspace_id=state.workspace_id,
+            run_id=state.run_id,
+            goal=goal,
+            steps=plan_steps,
+            requires_code_execution=True,
         )
-        return plan, contract
+        return plan, contracts
+
+    def _make_plan_analysis_handler(self):
+        async def handler(ctx: CommandContext, args: dict[str, Any]) -> AsyncIterator[HarnessEvent]:
+            yield CommandStarted(
+                ts=datetime.now(UTC), workspace_id=ctx.workspace_id, chat_id=ctx.chat_id, run_id=ctx.run_id,
+                command="plan_analysis", arguments={"goal": args.get("goal")},
+            )
+            try:
+                state = RunStateRecord(
+                    workspace_id=ctx.workspace_id or "",
+                    active_agent_mode="analyst",
+                    run_id=ctx.run_id or f"run_{uuid4().hex[:12]}",
+                )
+                goal = str(args.get("goal") or "").strip()
+                steps = args.get("steps") or []
+                if not goal:
+                    raise ValueError("plan_analysis requires 'goal'")
+                plan, contracts = self._build_plan_from_arguments(state, goal=goal, steps=steps)
+            except Exception as exc:  # noqa: BLE001
+                yield CommandCompleted(
+                    ts=datetime.now(UTC), workspace_id=ctx.workspace_id, chat_id=ctx.chat_id, run_id=ctx.run_id,
+                    command="plan_analysis",
+                    result={"error": str(exc)},
+                )
+                return
+
+            # Stash contracts for resume_approved_step (keyed by run_id, step_id)
+            for contract in contracts:
+                self._pending_contracts[(state.run_id, contract.step_id)] = contract
+            self._pending_plans[plan.id] = plan
+
+            yield PlanReady(
+                ts=datetime.now(UTC), workspace_id=ctx.workspace_id, chat_id=ctx.chat_id, run_id=ctx.run_id,
+                plan_id=plan.id, plan=plan.model_dump(mode="json"),
+            )
+            first_step = plan.steps[0]
+            yield ApprovalRequired(
+                ts=datetime.now(UTC), workspace_id=ctx.workspace_id, chat_id=ctx.chat_id, run_id=ctx.run_id,
+                plan_id=plan.id, step_id=first_step.id,
+                step=first_step.model_dump(mode="json"),
+                prompt="Approval required before running code.",
+            )
+            yield CommandCompleted(
+                ts=datetime.now(UTC), workspace_id=ctx.workspace_id, chat_id=ctx.chat_id, run_id=ctx.run_id,
+                command="plan_analysis",
+                result={
+                    "plan_id": plan.id,
+                    "goal": plan.goal,
+                    "step_count": len(plan.steps),
+                    "awaiting_approval": first_step.id,
+                },
+            )
+        return handler
+
+    def _handle_plan_analysis(self, ctx: CommandContext, args: dict[str, Any]):
+        return self._make_plan_analysis_handler()(ctx, args)
+
+    async def _handle_request_execution(
+        self, ctx: CommandContext, args: dict[str, Any],
+    ) -> AsyncIterator[HarnessEvent]:
+        plan_id = str(args.get("plan_id") or "")
+        step_id = str(args.get("step_id") or "")
+        yield CommandStarted(
+            ts=datetime.now(UTC), workspace_id=ctx.workspace_id, chat_id=ctx.chat_id, run_id=ctx.run_id,
+            command="request_execution", arguments={"plan_id": plan_id, "step_id": step_id},
+        )
+        contract = self._pending_contracts.get((ctx.run_id or "", step_id))
+        if contract is None:
+            yield CommandCompleted(
+                ts=datetime.now(UTC), workspace_id=ctx.workspace_id, chat_id=ctx.chat_id, run_id=ctx.run_id,
+                command="request_execution",
+                result={"error": f"no pending contract for {plan_id}/{step_id}"},
+            )
+            return
+        yield ApprovalRequired(
+            ts=datetime.now(UTC), workspace_id=ctx.workspace_id, chat_id=ctx.chat_id, run_id=ctx.run_id,
+            plan_id=plan_id, step_id=step_id,
+            step={"id": step_id},
+            prompt="Approval required before running code.",
+        )
+        yield CommandCompleted(
+            ts=datetime.now(UTC), workspace_id=ctx.workspace_id, chat_id=ctx.chat_id, run_id=ctx.run_id,
+            command="request_execution",
+            result={"plan_id": plan_id, "step_id": step_id, "awaiting_approval": True},
+        )
 
     def switch_workspace(self, state: RunStateRecord, *, new_workspace_id: str) -> RunStateRecord:
         new_state = RunStateRecord(

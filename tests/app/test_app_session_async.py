@@ -14,7 +14,7 @@ class FakeOrchestrator:
         self.run_calls = 0
         self._active = False
 
-    async def run_turn(self, state, *, workspace_dir, chat_id, user_input, requested_mode=None, prompt_text=None):
+    async def run_turn(self, state, *, workspace_dir, chat_id, user_input, requested_mode=None, prompt_text=None, durable_context=""):
         if self._active:
             raise RunAlreadyActive(run_id="x")
         self._active = True
@@ -30,6 +30,18 @@ class FakeOrchestrator:
             )
         finally:
             self._active = False
+
+    async def run_agentic_turn(
+        self, state, *, workspace_dir, chat_id, user_input,
+        requested_mode, prompt_provider, max_iterations=4,
+    ):
+        # Single-iteration shim that delegates to run_turn for the AppSession test.
+        prompt_provider(requested_mode)
+        async for ev in self.run_turn(
+            state, workspace_dir=workspace_dir, chat_id=chat_id, user_input=user_input,
+            requested_mode=requested_mode, prompt_text="", durable_context="",
+        ):
+            yield ev
 
     async def list_commands(self, ctx=None): return []
     async def help(self, command=None):

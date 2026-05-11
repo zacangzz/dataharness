@@ -1,7 +1,8 @@
-"""Full turn integration — migrated to async event consumption (was sync handle_turn)."""
+"""Full turn integration — analyst plans now built via `plan_analysis` tool_call dispatch."""
 from datetime import UTC, datetime
 from pathlib import Path
 
+from harness.command_registry import CommandContext
 from harness.control import ApprovalRecord, RunStateRecord
 from harness.db import WorkspaceDb
 from harness.orchestrator import Orchestrator
@@ -9,7 +10,32 @@ from harness.persistence import HarnessPersistence
 from worker.executor import PythonStepExecutor
 
 
-async def test_analysis_turn_creates_plan_and_pauses_for_code_approval(tmp_path: Path) -> None:
+_PLAN_ARGS = {
+    "goal": "compare leavers by department",
+    "steps": [
+        {
+            "purpose": "Compute leavers per department.",
+            "code": (
+                "from pathlib import Path\n"
+                "Path('output.txt').write_text('department,leavers\\nSales,1\\n')\n"
+            ),
+            "declared_inputs": ["data/input.csv"],
+            "expected_outputs": ["output.txt"],
+        }
+    ],
+}
+
+
+async def _dispatch_plan_analysis(orchestrator: Orchestrator, state: RunStateRecord, workspace_id: str):
+    handler = orchestrator.registry.get_handler("plan_analysis")
+    ctx = CommandContext(
+        workspace_id=workspace_id, chat_id="c1", run_id=state.run_id,
+        has_pending_approval=False, has_pending_clarification=False,
+    )
+    return [ev async for ev in handler(ctx, _PLAN_ARGS)]
+
+
+async def test_analysis_plan_command_emits_plan_and_approval(tmp_path: Path) -> None:
     workspace = tmp_path / "workspaces" / "w_0001"
     (workspace / "data").mkdir(parents=True)
     (workspace / "memory").mkdir(parents=True)
@@ -18,25 +44,19 @@ async def test_analysis_turn_creates_plan_and_pauses_for_code_approval(tmp_path:
     (workspace / "data" / "input.csv").write_text("department,leavers\nSales,1\n")
     db = WorkspaceDb(workspace / "state" / "workspace.db")
     orchestrator = Orchestrator(persistence=HarnessPersistence(db), app_root=tmp_path)
-    state = RunStateRecord(workspace_id="w_0001", active_agent_mode="interaction")
+    state = RunStateRecord(workspace_id="w_0001", active_agent_mode="analyst")
 
-    events = [e async for e in orchestrator.run_turn(
-        state,
-        workspace_dir=workspace,
-        chat_id="c1",
-        user_input="compare leavers by department",
-        requested_mode="analyst",
-        prompt_text="analyst",
-    )]
-
+    events = await _dispatch_plan_analysis(orchestrator, state, "w_0001")
     names = [e.event_name for e in events]
-    assert any(e.event_name == "ApprovalRequired" for e in events)
-    assert names[-1] == "ApprovalRequired"
+
+    assert "PlanReady" in names
+    assert "ApprovalRequired" in names
     plan_event = next(e for e in events if e.event_name == "PlanReady")
     assert plan_event.plan["requires_code_execution"] is True
+    assert plan_event.plan["goal"] == "compare leavers by department"
 
 
-async def test_approved_analysis_turn_dispatches_worker_inspects_artifacts_and_persists(tmp_path: Path) -> None:
+async def test_approved_analysis_dispatches_worker_and_persists(tmp_path: Path) -> None:
     workspace = tmp_path / "workspaces" / "w_0001"
     (workspace / "data").mkdir(parents=True)
     (workspace / "artifacts" / "tmp").mkdir(parents=True)
@@ -45,17 +65,12 @@ async def test_approved_analysis_turn_dispatches_worker_inspects_artifacts_and_p
     (workspace / "memory" / "preferences.json").write_text("{}")
     (workspace / "data" / "input.csv").write_text("department,leavers\nSales,1\n")
     db = WorkspaceDb(workspace / "state" / "workspace.db")
-    orchestrator = Orchestrator(worker=PythonStepExecutor(), persistence=HarnessPersistence(db), app_root=tmp_path)
+    orchestrator = Orchestrator(
+        worker=PythonStepExecutor(), persistence=HarnessPersistence(db), app_root=tmp_path,
+    )
     state = RunStateRecord(workspace_id="w_0001", active_agent_mode="analyst")
 
-    paused_events = [e async for e in orchestrator.run_turn(
-        state,
-        workspace_dir=workspace,
-        chat_id="c1",
-        user_input="compare leavers by department",
-        requested_mode="analyst",
-        prompt_text="analyst",
-    )]
+    paused_events = await _dispatch_plan_analysis(orchestrator, state, "w_0001")
     plan_event = next(e for e in paused_events if e.event_name == "PlanReady")
     appr_event = next(e for e in paused_events if e.event_name == "ApprovalRequired")
 

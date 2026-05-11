@@ -64,11 +64,6 @@ class AsyncWorkspaceManager:
         new_dir = self.workspaces_dir / new_id
         new_dir.parent.mkdir(parents=True, exist_ok=True)
         old_dir.rename(new_dir)
-        chats_old = self.app_root / "chats" / old_id
-        chats_new = self.app_root / "chats" / new_id
-        if chats_old.exists():
-            chats_new.parent.mkdir(parents=True, exist_ok=True)
-            chats_old.rename(chats_new)
         store = AppStore.load(self.app_store_path)
         store.known_workspaces.pop(old_id, None)
         store.known_workspaces[new_id] = str(new_dir)
@@ -85,8 +80,6 @@ class AsyncWorkspaceManager:
             raise WorkspaceNotFound(workspace_id=workspace_id)
         if self.chat_store is not None:
             await self.chat_store.cascade_delete_for_workspace(workspace_id)
-        else:
-            shutil.rmtree(self.app_root / "chats" / workspace_id, ignore_errors=True)
         shutil.rmtree(workspace_dir)
         store = AppStore.load(self.app_store_path)
         store.known_workspaces.pop(workspace_id, None)
@@ -140,7 +133,7 @@ class AsyncWorkspaceManager:
             raise WorkspaceNotFound(workspace_id=workspace_id)
         data_dir = workspace_dir / "data"
         source_count = sum(1 for item in data_dir.rglob("*") if item.is_file()) if data_dir.exists() else 0
-        chats_dir = self.app_root / "chats" / workspace_id
+        chats_dir = workspace_dir / "chats"
         chat_count = sum(1 for item in chats_dir.iterdir() if item.is_dir()) if chats_dir.exists() else 0
         created_at = datetime.fromtimestamp(workspace_dir.stat().st_ctime, UTC)
         store = AppStore.load(self.app_store_path)

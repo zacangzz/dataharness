@@ -41,9 +41,10 @@ Screen {
 }
 
 #user_input {
-    height: 3;
-    min-height: 3;
-    max-height: 6;
+    height: auto;
+    min-height: 1;
+    max-height: 4;
+    overflow-y: auto;
 }
 
 #prompt_bar {
@@ -232,4 +233,63 @@ JumpOverlay {
 Footer {
     dock: bottom;
     height: 1;
+}
+
+#approval_banner {
+    display: none;
+    height: auto;
+    max-height: 14;
+    border: round $warning;
+    padding: 0 1;
+    background: $surface;
+}
+
+#approval_banner.visible {
+    display: block;
+}
+
+#approval_goal {
+    color: $warning;
+    text-style: bold;
+}
+
+#approval_code {
+    color: $text-muted;
+    padding: 1 0;
+}
+
+#approval_buttons {
+    height: 3;
+    align: left middle;
+}
+
+#approval_buttons Button {
+    margin-right: 1;
+}
+
+#clarification_bar {
+    display: none;
+    height: auto;
+    max-height: 8;
+    border: round $accent;
+    padding: 0 1;
+    background: $surface;
+}
+
+#clarification_bar.visible {
+    display: block;
+}
+
+#clarification_question {
+    color: $accent;
+    text-style: bold;
+}
+
+#clarification_buttons {
+    height: 3;
+    align: left middle;
+}
+
+#clarification_buttons Button {
+    margin-right: 1;
 }

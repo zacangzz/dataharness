@@ -12,6 +12,7 @@ from harness.events import HarnessEvent
 ArgType = Literal[
     "str", "int", "float", "bool", "path",
     "chat_id", "workspace_id", "run_id", "step_id", "artifact_path",
+    "json",
 ]
 
 
@@ -104,7 +105,25 @@ class HarnessCommandRegistry:
     def get_handler(self, command: str) -> CommandHandler:
         return self._handlers[command][1]
 
+    def list_runtime_callable(self) -> list[HarnessCommandDescriptor]:
+        """Return descriptors for commands safe to invoke from a runtime tool_call.
+
+        Filters to read-only inspection commands. App layer renders these into
+        the prompt tool catalog so the model only emits known names.
+        """
+        allowed = {
+            "workspace_status", "workspace_inventory", "list_workspaces",
+            "list_chats", "list_files", "inspect_file",
+            "plan_analysis", "request_execution",
+        }
+        return sorted(
+            (desc for name, (desc, _) in self._handlers.items() if name in allowed),
+            key=lambda d: d.name,
+        )
+
     def _coerce(self, spec: ArgSpec, value: Any) -> Any:
+        if spec.type == "json":
+            return value  # passthrough for nested objects/lists
         if spec.type in {"str", "path", "chat_id", "workspace_id", "run_id", "step_id", "artifact_path"}:
             return str(value)
         if spec.type == "int":

@@ -5,7 +5,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from textual.app import App
+from textual.app import App, SkipAction
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.widget import Widget
@@ -22,11 +22,12 @@ from app.tui.jump import Jumper, JumpOverlay
 from app.tui.prompt_bar import PromptBar
 from app.tui.prompt_editor import PromptEditor
 from app.tui.run_trace import RunTrace
-from app.tui.screens import ApprovalScreen, ClarificationScreen
 from app.tui.screens.file_ingest import FileIngestScreen
 from app.tui.screens.workspace_manager import WorkspaceManagerScreen
 from app.tui.sidebar_sections import InsertMentionRequested, ResumeChatRequested
 from app.tui.widgets import (
+    ApprovalBanner,
+    ClarificationBar,
     ConversationPane,
     SidebarPane,
     WorkspaceBar,
@@ -46,6 +47,7 @@ class DataHarnessApp(App[None]):
     # Keep the palette scoped to DataHarness commands; Textual system providers are intentionally omitted.
     COMMANDS = {DataHarnessCommandProvider}
     BINDINGS = [
+        Binding("ctrl+c,super+c", "copy_text", "Copy", show=False, priority=True),
         Binding("ctrl+p", "command_palette", "Commands"),
         Binding("ctrl+o", "toggle_jump_mode", "Jump", id="jump"),
         Binding("ctrl+f", "open_files", "Files"),
@@ -123,6 +125,8 @@ class DataHarnessApp(App[None]):
                 Horizontal(
                     Vertical(
                         ConversationPane(id="conversation"),
+                        ApprovalBanner(id="approval_banner"),
+                        ClarificationBar(id="clarification_bar"),
                         PromptBar(session=self._session, state=self._state, id="prompt_bar"),
                         id="chat_column",
                     ),
@@ -322,9 +326,7 @@ class DataHarnessApp(App[None]):
             "AppFinalMessage": self._handle_final_message,
             "AppTurnFailed": self._handle_turn_failed,
             "AppTurnCancelled": self._handle_turn_cancelled,
-            "AppApprovalRequired": lambda e: self.push_screen(
-                ApprovalScreen(plan={"id": e.plan_id, "steps": [e.step]}, step_contract=e.step)
-            ),
+            "AppApprovalRequired": self._handle_approval_required,
             "AppCommandStarted": self._handle_command_started,
             "AppCommandProgress": self._handle_command_progress,
             "AppCommandCompleted": self._handle_command_completed,
@@ -510,6 +512,37 @@ class DataHarnessApp(App[None]):
         picker.refresh_query("")
         picker.focus_picker()
 
+    def action_copy_text(self) -> None:
+        text = self._copyable_text()
+        if not text:
+            raise SkipAction()
+        self.copy_to_clipboard(text)
+
+    def _copyable_text(self) -> str:
+        try:
+            selected = self.screen.get_selected_text()
+        except Exception:
+            selected = None
+        if selected:
+            return selected
+
+        focused = self.focused
+        if focused is None:
+            return ""
+
+        selected_text = getattr(focused, "selected_text", None)
+        if isinstance(selected_text, str) and selected_text:
+            return selected_text
+
+        text_buffer = getattr(focused, "text_buffer", None)
+        if callable(text_buffer):
+            return str(text_buffer()).strip()
+
+        render = getattr(focused, "render", None)
+        if callable(render):
+            return str(render()).strip()
+        return ""
+
     async def action_upload_files(self) -> None:
         def _after(_result) -> None:
             self.run_worker(self._refresh_sidebar_resources())
@@ -573,11 +606,28 @@ class DataHarnessApp(App[None]):
 
         await self.push_screen(HelpScreen(focused), restore_focus)
 
+    def _handle_approval_required(self, event) -> None:
+        try:
+            banner = self.query_one("#approval_banner", ApprovalBanner)
+        except Exception:
+            return
+        banner.show(
+            plan={"id": event.plan_id},
+            step_contract=event.step,
+        )
+
+    @on(ApprovalBanner.ApprovalDecisionMade)
+    def _on_approval_decision_made(self, event: ApprovalBanner.ApprovalDecisionMade) -> None:
+        self.handle_approval_decision(event.plan, event.step_contract, event.decision)
+
     def handle_approval_decision(
         self, plan: dict, step_contract: dict | None, decision: str
     ) -> None:
         approval = {"decision": decision, "decided_by": "user", "approval_kind": "code_execution"}
-        self.pop_screen()
+        try:
+            self.query_one("#approval_banner", ApprovalBanner).hide()
+        except Exception:
+            pass
         if decision == "revise_requested":
             self.run_worker(self._stream_command("revise_goal", {"plan_id": plan.get("id")}))
             return
@@ -589,7 +639,7 @@ class DataHarnessApp(App[None]):
             async for ev in self._session.resume_approved_step(
                 workspace_dir=self._workspace_dir,
                 state=self._state,
-                plan_payload=plan,
+                plan_id=plan.get("id") if isinstance(plan, dict) else None,
                 contract_payload=step_contract,
                 approval=approval,
             ):
@@ -598,8 +648,32 @@ class DataHarnessApp(App[None]):
             self._emit_error(phase="resume_approved", exc=exc)
             self.notify(str(exc), severity="error")
 
+    def show_clarification_prompt(self, question: str) -> None:
+        try:
+            self.query_one("#clarification_bar", ClarificationBar).show(question=question)
+        except Exception:
+            pass
+
+    @on(ClarificationBar.ClarificationSubmitted)
+    def _on_clarification_submitted(
+        self, event: ClarificationBar.ClarificationSubmitted
+    ) -> None:
+        self.handle_clarification_response(event.text)
+
+    @on(ClarificationBar.ClarificationDismissed)
+    def _on_clarification_dismissed(
+        self, event: ClarificationBar.ClarificationDismissed
+    ) -> None:
+        try:
+            self.query_one("#clarification_bar", ClarificationBar).hide()
+        except Exception:
+            pass
+
     def handle_clarification_response(self, text: str) -> None:
-        self.pop_screen()
+        try:
+            self.query_one("#clarification_bar", ClarificationBar).hide()
+        except Exception:
+            pass
         self.run_worker(self._stream_clarification(text))
 
     async def _stream_clarification(self, text: str) -> None:

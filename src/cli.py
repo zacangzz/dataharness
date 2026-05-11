@@ -18,6 +18,9 @@ from observability import (
 from observability.events import EventKind, Layer
 
 
+_PRIVATE_MODULE_TARGETS = frozenset({"worker.sandbox_bootstrap"})
+
+
 def _default_runtime_factory(config, telemetry):
     runtime_module = importlib.import_module("runtime.llama_cpp_runtime")
     return runtime_module.LlamaCppRuntime(config, telemetry=telemetry)
@@ -92,7 +95,34 @@ def _parse_argv(argv: list[str]) -> argparse.Namespace:
     return parser.parse_known_args(argv)[0]
 
 
+def _dispatch_private_module(argv: list[str]) -> int | None:
+    if not argv or argv[0] != "-m":
+        return None
+    if len(argv) < 2:
+        print("dataharness: -m requires a private module target", file=sys.stderr)
+        return 2
+    target = argv[1]
+    if target not in _PRIVATE_MODULE_TARGETS:
+        print(f"dataharness: unsupported private module target: {target}", file=sys.stderr)
+        return 2
+    if target == "worker.sandbox_bootstrap" and len(argv) != 3:
+        print("dataharness: worker.sandbox_bootstrap requires exactly one config path", file=sys.stderr)
+        return 2
+
+    module = importlib.import_module(target)
+    original_argv = sys.argv
+    sys.argv = [target, *argv[2:]]
+    try:
+        return int(module.main() or 0)
+    finally:
+        sys.argv = original_argv
+
+
 def main() -> None:
+    private_exit_code = _dispatch_private_module(sys.argv[1:])
+    if private_exit_code is not None:
+        raise SystemExit(private_exit_code)
+
     args = _parse_argv(sys.argv[1:])
     log_dir = configure_logging(resolve_log_dir())
     telemetry = Telemetry(resolve_telemetry_dir())
@@ -113,5 +143,22 @@ def main() -> None:
         telemetry.emit(Layer.BOOTSTRAP, EventKind.BOOTSTRAP_RUN_END)
 
 
+def _write_crash_log(exc: BaseException) -> None:
+    import traceback
+
+    try:
+        log_dir = resolve_log_dir()
+        log_dir.mkdir(parents=True, exist_ok=True)
+        (log_dir / "app_crash.log").write_text(
+            "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        )
+    except Exception:
+        pass
+
+
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except BaseException as exc:
+        _write_crash_log(exc)
+        raise

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -89,7 +90,14 @@ class DoctorRunner:
     ) -> tuple[list[DoctorFinding], list[DoctorActionProposed]]:
         if phase == "review_tmp":
             tmp_dir = workspace_dir / "artifacts" / "tmp"
-            items = list(tmp_dir.rglob("*")) if tmp_dir.exists() else []
+            items = sorted(p for p in tmp_dir.rglob("*") if p.is_file()) if tmp_dir.exists() else []
+            live_refs, promote_map = self._classify_tmp_items(items)
+            review = self.doctor.review_tmp_items(
+                items,
+                trigger_context="doctor_runner",
+                live_refs=live_refs,
+                promote_map=promote_map,
+            )
             findings = [
                 DoctorFinding(
                     ts=datetime.now(UTC), workspace_id=workspace_id, chat_id=chat_id, run_id=run_id,
@@ -97,7 +105,19 @@ class DoctorRunner:
                     summary=f"tmp contains {len(items)} items", details={"count": len(items)},
                 )
             ]
-            return findings, []
+            actions = [
+                DoctorActionProposed(
+                    ts=datetime.now(UTC), workspace_id=workspace_id, chat_id=chat_id, run_id=run_id,
+                    report_id=report_id,
+                    action=self._event_action(record["action"]),
+                    target=str(record["item_path"]),
+                    rationale=str(record["reason"]),
+                    destination_path=record.get("destination_path"),
+                )
+                for record in review["tmp_actions"]
+                if record["action"] != "deleted"
+            ]
+            return findings, actions
         return [
             DoctorFinding(
                 ts=datetime.now(UTC), workspace_id=workspace_id, chat_id=chat_id, run_id=run_id,
@@ -113,3 +133,35 @@ class DoctorRunner:
             "review_lineage": "lineage", "review_tmp": "tmp",
             "review_memory": "memory", "assemble_recommendations": "memory",
         }[phase]
+
+    @staticmethod
+    def _event_action(action: str) -> str:
+        return {
+            "promoted": "promote",
+            "kept_temporarily": "keep",
+            "deleted": "cleanup",
+        }.get(action, "review")
+
+    def _classify_tmp_items(self, items: list[Path]) -> tuple[set[str], dict[str, str]]:
+        live_refs: set[str] = set()
+        promote_map: dict[str, str] = {}
+        for item in items:
+            if item.name != "step.py":
+                continue
+            step_dir = item.parent
+            result_path = step_dir / "step_result.json"
+            result = self._read_step_result(result_path)
+            if result.get("status") == "ok" and not result.get("failure_summary"):
+                promote_map[str(item)] = "function"
+            else:
+                for evidence in step_dir.glob("*"):
+                    if evidence.is_file():
+                        live_refs.add(str(evidence))
+        return live_refs, promote_map
+
+    @staticmethod
+    def _read_step_result(path: Path) -> dict[str, object]:
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}

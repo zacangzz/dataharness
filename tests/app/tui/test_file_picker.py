@@ -96,18 +96,19 @@ async def test_file_picker_tree_is_hierarchical(tmp_path: Path):
     (workspace / "data").mkdir(parents=True)
     (workspace / "data" / "sales.csv").write_text("x")
     (workspace / "data" / "notes.md").write_text("y")
-    (workspace / "reports").mkdir()
-    (workspace / "reports" / "annual.md").write_text("z")
+    (workspace / "data" / "reports").mkdir()
+    (workspace / "data" / "reports" / "annual.md").write_text("z")
     app = FilePickerHarness(workspace)
     async with app.run_test() as pilot:
         picker = app.query_one("#picker", FilePicker)
         await pilot.pause()
         from textual.widgets import Tree
         tree = picker.query_one("#file_picker_tree", Tree)
-        # The two top-level folders should appear as hierarchical nodes.
         children_labels = [str(child.label) for child in tree.root.children]
         assert "data" in children_labels
-        assert "reports" in children_labels
+        data_node = next(c for c in tree.root.children if str(c.label) == "data")
+        sub_labels = [str(child.label) for child in data_node.children]
+        assert "reports" in sub_labels
 
 
 @pytest.mark.asyncio
@@ -175,14 +176,14 @@ async def test_file_picker_multiselect_emits_confirmed(tmp_path: Path):
 async def test_file_picker_update_root_swaps_index(tmp_path: Path):
     root_a = tmp_path / "a"
     root_b = tmp_path / "b"
-    root_a.mkdir()
-    root_b.mkdir()
-    (root_a / "x.csv").write_text("x")
-    (root_b / "y.csv").write_text("y")
+    (root_a / "data").mkdir(parents=True)
+    (root_b / "data").mkdir(parents=True)
+    (root_a / "data" / "x.csv").write_text("x")
+    (root_b / "data" / "y.csv").write_text("y")
     app = FilePickerHarness(root_a)
     async with app.run_test() as pilot:
         picker = app.query_one("#picker", FilePicker)
         picker.update_root(root_b)
         await pilot.pause()
         paths = [e.path for e in picker.index.scan()]
-        assert paths == ["y.csv"]
+        assert paths == ["data/y.csv"]

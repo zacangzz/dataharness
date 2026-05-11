@@ -10,9 +10,15 @@ def test_parse_tool_call_block_returns_name_and_arguments() -> None:
     assert parsed.arguments == {"mode": "manual"}
 
 
-def test_parse_tool_call_block_rejects_missing_arguments() -> None:
+def test_parse_tool_call_block_defaults_missing_arguments() -> None:
+    parsed = parse_tool_call_block('<tool_call>{"name":"doctor"}</tool_call>')
+    assert parsed.name == "doctor"
+    assert parsed.arguments == {}
+
+
+def test_parse_tool_call_block_rejects_missing_name() -> None:
     with pytest.raises(ToolCallParseError):
-        parse_tool_call_block('<tool_call>{"name":"doctor"}</tool_call>')
+        parse_tool_call_block('<tool_call>{"arguments":{}}</tool_call>')
 
 
 def test_parse_tool_call_block_rejects_invalid_json() -> None:

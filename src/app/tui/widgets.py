@@ -16,8 +16,9 @@ from app.tui.sidebar_sections import (
     WorkspaceSection,
 )
 from textual.app import ComposeResult
-from textual.containers import VerticalScroll
-from textual.widgets import Static
+from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.message import Message
+from textual.widgets import Button, Input, Static
 
 
 class WorkspaceBar(Static):
@@ -26,6 +27,10 @@ class WorkspaceBar(Static):
         title="Workspace Bar",
         description="Shows the active workspace, run state, mode, runtime status, chat, and phase.",
     )
+
+    def __init__(self, *args, **kwargs) -> None:
+        kwargs.setdefault("markup", False)
+        super().__init__(*args, **kwargs)
 
     def update_from(
         self,
@@ -134,13 +139,17 @@ class ConversationPane(VerticalScroll):
             pass
         self._blocks = []
         self._streaming_block = None
+        from app.tui.conversation import _clean as _clean_text
         for message in record.messages:
+            cleaned = _clean_text(message.text)
+            if not cleaned:
+                continue  # skip synthetic tool-followup / draft echoes from older chats
             if message.role == "user":
-                self.append_user(message.text)
+                self.append_user(cleaned)
             elif message.role == "assistant":
-                self.append_assistant(message.text)
+                self.append_assistant(cleaned)
             else:
-                block = SystemMessageBlock(message.text)
+                block = SystemMessageBlock(cleaned)
                 self._blocks.append(block)
                 self._safe_mount(block)
 
@@ -286,6 +295,10 @@ class SidebarPane(VerticalScroll):
 
 
 class PlanPane(Static):
+    def __init__(self, *args, **kwargs) -> None:
+        kwargs.setdefault("markup", False)
+        super().__init__(*args, **kwargs)
+
     def render_plan(self, plan: dict | None) -> None:
         if plan is None:
             self.update("(no plan)")
@@ -299,6 +312,10 @@ class PlanPane(Static):
 
 
 class StepStatusPane(Static):
+    def __init__(self, *args, **kwargs) -> None:
+        kwargs.setdefault("markup", False)
+        super().__init__(*args, **kwargs)
+
     def render_contract(self, contract: dict | None, requires_approval: bool) -> None:
         if contract is None:
             self.update("(no active step)")
@@ -310,11 +327,19 @@ class StepStatusPane(Static):
 
 
 class ArtifactsPane(Static):
+    def __init__(self, *args, **kwargs) -> None:
+        kwargs.setdefault("markup", False)
+        super().__init__(*args, **kwargs)
+
     def render_refs(self, refs: list[str]) -> None:
         self.update("\n".join(refs) if refs else "(no artifacts)")
 
 
 class ContextMemoryPane(Static):
+    def __init__(self, *args, **kwargs) -> None:
+        kwargs.setdefault("markup", False)
+        super().__init__(*args, **kwargs)
+
     def render_summary(self, *, preferences: dict, notes_count: int, doctor_warning_count: int) -> None:
         self.update(
             f"prefs: {len(preferences)} keys | notes: {notes_count} | doctor warnings: {doctor_warning_count}"
@@ -323,6 +348,7 @@ class ContextMemoryPane(Static):
 
 class DoctorPane(Static):
     def __init__(self, *args, **kwargs) -> None:
+        kwargs.setdefault("markup", False)
         super().__init__(*args, **kwargs)
         self._findings: list[str] = []
 
@@ -345,6 +371,10 @@ class DoctorPane(Static):
 
 
 class FailurePane(Static):
+    def __init__(self, *args, **kwargs) -> None:
+        kwargs.setdefault("markup", False)
+        super().__init__(*args, **kwargs)
+
     def render_failure(self, failure: dict | None) -> None:
         if failure is None:
             self.update("(no failure)")
@@ -358,6 +388,10 @@ class FailurePane(Static):
 
 
 class ProvenancePane(Static):
+    def __init__(self, *args, **kwargs) -> None:
+        kwargs.setdefault("markup", False)
+        super().__init__(*args, **kwargs)
+
     def render_lineage(self, lineage_refs: list[dict]) -> None:
         if not lineage_refs:
             self.update("(no lineage)")
@@ -371,6 +405,7 @@ class ProvenancePane(Static):
 
 class StatusPane(Static):
     def __init__(self, *args, **kwargs) -> None:
+        kwargs.setdefault("markup", False)
         super().__init__(*args, **kwargs)
         self._events: deque[str] = deque(maxlen=20)
 
@@ -378,3 +413,170 @@ class StatusPane(Static):
         for event in events:
             self._events.append(event)
         self.update(" | ".join(self._events))
+
+
+class ApprovalBanner(Vertical):
+    """Inline approval banner; replaces full-screen ApprovalScreen.
+
+    Shows plan goal, step contract summary, and code preview. Posts
+    ApprovalDecisionMade on button or keybinding.
+    """
+
+    can_focus = True
+    BINDINGS = [
+        ("a", "decide('approved')", "approve"),
+        ("r", "decide('rejected')", "reject"),
+        ("v", "decide('revise_requested')", "revise"),
+    ]
+
+    class ApprovalDecisionMade(Message):
+        def __init__(self, plan: dict, step_contract: dict, decision: str) -> None:
+            super().__init__()
+            self.plan = plan
+            self.step_contract = step_contract
+            self.decision = decision
+
+    def __init__(self, **kwargs) -> None:
+        kwargs.setdefault("id", "approval_banner")
+        super().__init__(**kwargs)
+        self._plan: dict = {}
+        self._step_contract: dict = {}
+        self.display = False
+
+    def compose(self) -> ComposeResult:
+        yield Static("(awaiting approval)", id="approval_goal", markup=False)
+        yield Static("", id="approval_step", markup=False)
+        yield Static("", id="approval_code", markup=False)
+        yield Horizontal(
+            Button("Approve (a)", id="approve", variant="success"),
+            Button("Reject (r)", id="reject", variant="error"),
+            Button("Revise (v)", id="revise"),
+            id="approval_buttons",
+        )
+
+    def show(self, *, plan: dict, step_contract: dict) -> None:
+        self._plan = plan or {}
+        self._step_contract = step_contract or {}
+        goal = self._plan.get("goal") or self._step_contract.get("purpose") or "(unknown goal)"
+        step_id = self._step_contract.get("step_id", "?")
+        inputs = self._step_contract.get("declared_inputs", [])
+        outputs = self._step_contract.get("expected_outputs", [])
+        code = self._step_contract.get("code", "") or ""
+        preview_lines = code.splitlines()[:6]
+        if len(code.splitlines()) > 6:
+            preview_lines.append(f"... ({len(code.splitlines()) - 6} more lines)")
+        try:
+            self.query_one("#approval_goal", Static).update(f"APPROVE PLAN: {goal}")
+            self.query_one("#approval_step", Static).update(
+                f"step {step_id}  inputs={inputs}  outputs={outputs}"
+            )
+            self.query_one("#approval_code", Static).update(
+                "\n".join(preview_lines) or "(no code)"
+            )
+        except Exception:
+            pass
+        self.add_class("visible")
+        self.display = True
+        try:
+            self.focus()
+        except Exception:
+            pass
+
+    def hide(self) -> None:
+        self.remove_class("visible")
+        self.display = False
+
+    def action_decide(self, decision: str) -> None:
+        self._emit(decision)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        mapping = {"approve": "approved", "reject": "rejected", "revise": "revise_requested"}
+        decision = mapping.get(event.button.id)
+        if decision is None:
+            return
+        event.stop()
+        self._emit(decision)
+
+    def _emit(self, decision: str) -> None:
+        self.post_message(self.ApprovalDecisionMade(self._plan, self._step_contract, decision))
+
+
+class ClarificationBar(Vertical):
+    """Inline clarification bar; replaces full-screen ClarificationScreen.
+
+    Pins a clarification question above the prompt bar and provides an
+    input + submit button. Posts ClarificationSubmitted with the user's
+    response; the app routes it through `handle_clarification_response`.
+    """
+
+    can_focus = True
+    BINDINGS = [
+        ("escape", "dismiss", "dismiss"),
+    ]
+
+    class ClarificationSubmitted(Message):
+        def __init__(self, text: str) -> None:
+            super().__init__()
+            self.text = text
+
+    class ClarificationDismissed(Message):
+        pass
+
+    def __init__(self, **kwargs) -> None:
+        kwargs.setdefault("id", "clarification_bar")
+        super().__init__(**kwargs)
+        self._question: str = ""
+        self.display = False
+
+    def compose(self) -> ComposeResult:
+        yield Static("(no clarification)", id="clarification_question", markup=False)
+        yield Input(placeholder="Your clarification...", id="clarification_input")
+        yield Horizontal(
+            Button("Submit", id="clarification_submit", variant="primary"),
+            Button("Dismiss", id="clarification_dismiss"),
+            id="clarification_buttons",
+        )
+
+    def show(self, *, question: str) -> None:
+        self._question = question or "Clarification required"
+        try:
+            self.query_one("#clarification_question", Static).update(self._question)
+            self.query_one("#clarification_input", Input).value = ""
+        except Exception:
+            pass
+        self.add_class("visible")
+        self.display = True
+        try:
+            self.query_one("#clarification_input", Input).focus()
+        except Exception:
+            pass
+
+    def hide(self) -> None:
+        self.remove_class("visible")
+        self.display = False
+
+    def action_dismiss(self) -> None:
+        self.post_message(self.ClarificationDismissed())
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id != "clarification_input":
+            return
+        event.stop()
+        self._submit()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "clarification_submit":
+            event.stop()
+            self._submit()
+        elif event.button.id == "clarification_dismiss":
+            event.stop()
+            self.post_message(self.ClarificationDismissed())
+
+    def _submit(self) -> None:
+        try:
+            text = self.query_one("#clarification_input", Input).value.strip()
+        except Exception:
+            return
+        if not text:
+            return
+        self.post_message(self.ClarificationSubmitted(text))

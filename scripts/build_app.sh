@@ -21,6 +21,7 @@ uv run --with pyinstaller pyinstaller \
   --hidden-import harness.workspace \
   --hidden-import runtime.config \
   --hidden-import runtime.llama_cpp_runtime \
+  --hidden-import worker.sandbox_bootstrap \
   --add-data "${PROJECT_ROOT}/src/app/agents/prompts:app/agents/prompts" \
   --add-data "${PROJECT_ROOT}/src/app/tui/dataharness.tcss:app/tui" \
   --add-data "${PROJECT_ROOT}/src/harness/prompts:harness/prompts" \
@@ -31,6 +32,8 @@ uv run --with pyinstaller pyinstaller \
   --collect-submodules worker \
   --collect-all textual \
   --collect-all llama_cpp \
+  --collect-all pandas \
+  --collect-all numpy \
   --distpath dist \
   --workpath build/pyinstaller \
   --specpath build/pyinstaller \

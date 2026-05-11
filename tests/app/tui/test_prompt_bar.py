@@ -163,6 +163,27 @@ async def test_prompt_bar_at_opens_file_picker_and_inserts_file(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_prompt_bar_at_selection_restores_prompt_focus(tmp_path):
+    workspace_dir = tmp_path / "workspaces" / "w_0001"
+    (workspace_dir / "data").mkdir(parents=True)
+    (workspace_dir / "data" / "sales.csv").write_text("x")
+    app = DataHarnessApp(workspace_dir=workspace_dir)
+
+    async with app.run_test() as pilot:
+        prompt = app.query_one("#prompt_bar", PromptBar)
+        prompt.prefill("analyze @sal")
+        await prompt.refresh_hints(prompt.editor.text)
+        await pilot.pause()
+        from app.tui.file_picker import FilePicker
+        picker = prompt.query_one("#prompt_file_picker", FilePicker)
+
+        picker.post_message(FilePicker.Selected("data/sales.csv"))
+        await pilot.pause()
+
+        assert app.focused is prompt.editor
+
+
+@pytest.mark.asyncio
 async def test_prompt_bar_at_makes_picker_visible(tmp_path):
     workspace_dir = tmp_path / "workspaces" / "w_0001"
     (workspace_dir / "data").mkdir(parents=True)

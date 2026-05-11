@@ -63,7 +63,7 @@ async def test_workspace_switch_blocked_unless_force(session, tmp_path):
 async def test_no_chat_dir_until_first_message(session, tmp_path):
     await session.create_workspace("w1")
     chat = await session.create_chat("w1")
-    chat_dir = tmp_path / "chats" / "w1" / chat.chat_id
+    chat_dir = tmp_path / "workspaces" / "w1" / "chats" / chat.chat_id
     assert not chat_dir.exists()
 
 
@@ -74,7 +74,7 @@ async def test_chat_files_after_first_message(session, tmp_path):
     state = RunStateRecord(workspace_id="w1", active_agent_mode="interaction")
     async for _ in session.run_user_turn(state=state, workspace_dir=tmp_path, chat_id=chat.chat_id, user_text="hi"):
         pass
-    chat_dir = tmp_path / "chats" / "w1" / chat.chat_id
+    chat_dir = tmp_path / "workspaces" / "w1" / "chats" / chat.chat_id
     assert (chat_dir / "metadata.json").exists()
     assert (chat_dir / "messages.jsonl").exists()
 
@@ -89,7 +89,7 @@ async def test_workspace_delete_cascades_chats(session, tmp_path):
         turn_id=None, active_mode=None, token_estimate=1,
     ))
     await session.delete_workspace("w1")
-    assert not (tmp_path / "chats" / "w1").exists()
+    assert not (tmp_path / "workspaces" / "w1" / "chats").exists()
 
 
 # Spec §13 — Commands
