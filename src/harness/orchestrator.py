@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -53,6 +54,9 @@ _TURN_MARKER_RE = re.compile(
 )
 _READ_FILE_CHAR_CAP = 32_000
 _PLAN_ALLOWED_PACKAGES = ["pathlib", "csv", "json", "math", "statistics", "pandas", "numpy"]
+_PENDING_PLANS_FILE = "pending_plans.jsonl"
+_PENDING_PLANS_FILE = "pending_plans.jsonl"
+_PENDING_PLANS_FILE = "pending_plans.jsonl"
 
 _log = logging.getLogger("harness")
 
@@ -231,6 +235,8 @@ class Orchestrator:
         self._pending_contracts: dict[tuple[str, str], StepContract] = {}
         self._pending_plans: dict[str, Plan] = {}
         self.chat_store = ChatStore(self.app_root)
+        self._state_dir = self.app_root / "state"
+        self._replay_pending_plans()
         self.request_builder: RuntimeRequestBuilder | None = None
         self._runtime_lock = asyncio.Lock()
         self.compactor: ChatCompactor | None = None
@@ -1200,6 +1206,60 @@ class Orchestrator:
                 self._active_run_id = None
             self._cancel_flags.pop(run_id, None)
 
+    def _append_pending_plan(self, plan_id: str, entry: dict) -> None:
+        """Append a line to state/pending_plans.jsonl."""
+        path = self._state_dir / _PENDING_PLANS_FILE
+        path.parent.mkdir(parents=True, exist_ok=True)
+        entry["ts"] = time.time()
+        entry["plan_id"] = plan_id
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+
+    def _replay_pending_plans(self) -> None:
+        """Replay pending_plans.jsonl on init to rebuild _pending_plans dict."""
+        path = self._state_dir / _PENDING_PLANS_FILE
+        if not path.exists():
+            return
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                entry = json.loads(line)
+                pid = entry["plan_id"]
+                action = entry.get("action", "created")
+                if action == "created":
+                    self._pending_plans[pid] = entry.get("plan_data")
+                elif action in ("resolved", "rejected", "cancelled", "timed_out"):
+                    self._pending_plans.pop(pid, None)
+
+    def _append_pending_plan(self, plan_id: str, entry: dict) -> None:
+        """Append a line to state/pending_plans.jsonl."""
+        path = self._state_dir / _PENDING_PLANS_FILE
+        path.parent.mkdir(parents=True, exist_ok=True)
+        entry["ts"] = time.time()
+        entry["plan_id"] = plan_id
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+
+    def _replay_pending_plans(self) -> None:
+        """Replay pending_plans.jsonl on init to rebuild _pending_plans dict."""
+        path = self._state_dir / _PENDING_PLANS_FILE
+        if not path.exists():
+            return
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                entry = json.loads(line)
+                pid = entry["plan_id"]
+                action = entry.get("action", "created")
+                if action == "created":
+                    self._pending_plans[pid] = entry.get("plan_data")
+                elif action in ("resolved", "rejected", "cancelled", "timed_out"):
+                    self._pending_plans.pop(pid, None)
+
     # ---- chat management ----
     async def create_chat(self, *, workspace_id: str, title: str | None = None) -> ChatSummary:
         return await self.chat_store.create_chat(workspace_id=workspace_id, title=title)
@@ -1949,6 +2009,10 @@ class Orchestrator:
             await self._release_run(state.run_id)
             if pid:
                 self._pending_plans.pop(pid, None)
+                self._append_pending_plan(pid, {
+                    "action": "resolved",
+                    "resolution": "approved",
+                })
 
     async def resume_with_clarification(
         self,
@@ -2098,6 +2162,12 @@ class Orchestrator:
             for contract in contracts:
                 self._pending_contracts[(state.run_id, contract.step_id)] = contract
             self._pending_plans[plan.id] = plan
+            self._append_pending_plan(plan.id, {
+                "action": "created",
+                "plan_data": plan.model_dump(mode="json"),
+                "goal": plan.goal,
+                "step_count": len(plan.steps),
+            })
 
             yield PlanReady(
                 ts=datetime.now(UTC), workspace_id=ctx.workspace_id, chat_id=ctx.chat_id, run_id=ctx.run_id,
