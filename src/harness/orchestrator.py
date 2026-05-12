@@ -55,8 +55,6 @@ _TURN_MARKER_RE = re.compile(
 _READ_FILE_CHAR_CAP = 32_000
 _PLAN_ALLOWED_PACKAGES = ["pathlib", "csv", "json", "math", "statistics", "pandas", "numpy"]
 _PENDING_PLANS_FILE = "pending_plans.jsonl"
-_PENDING_PLANS_FILE = "pending_plans.jsonl"
-_PENDING_PLANS_FILE = "pending_plans.jsonl"
 
 _log = logging.getLogger("harness")
 
@@ -554,6 +552,33 @@ class Orchestrator:
             ),
             self._handle_rerun_step,
         )
+
+    def _append_pending_plan(self, plan_id: str, entry: dict) -> None:
+        """Append a line to state/pending_plans.jsonl."""
+        path = self._state_dir / _PENDING_PLANS_FILE
+        path.parent.mkdir(parents=True, exist_ok=True)
+        entry["ts"] = time.time()
+        entry["plan_id"] = plan_id
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+
+    def _replay_pending_plans(self) -> None:
+        """Replay pending_plans.jsonl on init to rebuild _pending_plans dict."""
+        path = self._state_dir / _PENDING_PLANS_FILE
+        if not path.exists():
+            return
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                entry = json.loads(line)
+                pid = entry["plan_id"]
+                action = entry.get("action", "created")
+                if action == "created":
+                    self._pending_plans[pid] = entry.get("plan_data")
+                elif action in ("resolved", "rejected", "cancelled", "timed_out"):
+                    self._pending_plans.pop(pid, None)
 
     # ---- command handlers ----
     async def _handle_doctor(self, ctx: CommandContext, args: dict[str, Any]) -> AsyncIterator[HarnessEvent]:
@@ -1205,60 +1230,6 @@ class Orchestrator:
             if self._active_run_id == run_id:
                 self._active_run_id = None
             self._cancel_flags.pop(run_id, None)
-
-    def _append_pending_plan(self, plan_id: str, entry: dict) -> None:
-        """Append a line to state/pending_plans.jsonl."""
-        path = self._state_dir / _PENDING_PLANS_FILE
-        path.parent.mkdir(parents=True, exist_ok=True)
-        entry["ts"] = time.time()
-        entry["plan_id"] = plan_id
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry) + "\n")
-
-    def _replay_pending_plans(self) -> None:
-        """Replay pending_plans.jsonl on init to rebuild _pending_plans dict."""
-        path = self._state_dir / _PENDING_PLANS_FILE
-        if not path.exists():
-            return
-        with open(path, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                entry = json.loads(line)
-                pid = entry["plan_id"]
-                action = entry.get("action", "created")
-                if action == "created":
-                    self._pending_plans[pid] = entry.get("plan_data")
-                elif action in ("resolved", "rejected", "cancelled", "timed_out"):
-                    self._pending_plans.pop(pid, None)
-
-    def _append_pending_plan(self, plan_id: str, entry: dict) -> None:
-        """Append a line to state/pending_plans.jsonl."""
-        path = self._state_dir / _PENDING_PLANS_FILE
-        path.parent.mkdir(parents=True, exist_ok=True)
-        entry["ts"] = time.time()
-        entry["plan_id"] = plan_id
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry) + "\n")
-
-    def _replay_pending_plans(self) -> None:
-        """Replay pending_plans.jsonl on init to rebuild _pending_plans dict."""
-        path = self._state_dir / _PENDING_PLANS_FILE
-        if not path.exists():
-            return
-        with open(path, encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                entry = json.loads(line)
-                pid = entry["plan_id"]
-                action = entry.get("action", "created")
-                if action == "created":
-                    self._pending_plans[pid] = entry.get("plan_data")
-                elif action in ("resolved", "rejected", "cancelled", "timed_out"):
-                    self._pending_plans.pop(pid, None)
 
     # ---- chat management ----
     async def create_chat(self, *, workspace_id: str, title: str | None = None) -> ChatSummary:

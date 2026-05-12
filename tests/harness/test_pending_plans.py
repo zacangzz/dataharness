@@ -39,3 +39,4 @@ async def test_pending_plans_survive_across_turns(tmp_path):
                 pending.pop(pid, None)
 
     assert "plan_1" not in pending
+
