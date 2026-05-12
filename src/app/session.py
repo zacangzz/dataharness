@@ -290,6 +290,9 @@ class AppSession:
         async for snap in self.orchestrator.watch_status():
             yield snap
 
+    def get_pending_plan(self, plan_id: str):
+        return self.orchestrator._pending_plans.get(plan_id)
+
 
 # Migration alias — kept only so existing import sites resolve until cleanup.
 DataAnalysisAppSession = AppSession

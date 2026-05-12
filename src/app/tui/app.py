@@ -734,9 +734,16 @@ class DataHarnessApp(App[None]):
             banner = self.query_one("#approval_banner", ApprovalBanner)
         except Exception:
             return
+        plan_id = event.plan_id
+        step = getattr(event, "step", {})
+        plan = self._session.get_pending_plan(plan_id) if plan_id else None
+
+        if plan is None:
+            plan = {"id": plan_id}
+
         banner.show(
-            plan={"id": event.plan_id},
-            step_contract=event.step,
+            plan=plan,
+            step_contract=step,
         )
 
     @on(ApprovalBanner.ApprovalDecisionMade)
