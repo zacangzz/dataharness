@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import re
+import shutil
 import time
 from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime
@@ -1903,6 +1904,51 @@ class Orchestrator:
         async for snap in self._status_broker.watch():
             yield snap
 
+    async def _promote_step_artifacts(
+        self,
+        workspace_dir: str,
+        step_result_path: str,
+        run_id: str,
+    ) -> list[Path]:
+        ws = Path(workspace_dir)
+        promoted: list[Path] = []
+
+        result_path = ws / step_result_path if step_result_path else None
+        if result_path is not None and result_path.exists() and result_path.is_file():
+            result = json.loads(result_path.read_text())
+        else:
+            result = {}
+            if step_result_path:
+                _log.debug("_promote_step_artifacts step_result_path not found: %s", step_result_path)
+
+        step_py = ws / "artifacts" / "tmp" / run_id / "step_1" / "step.py"
+        if step_py.exists():
+            funcs_dir = ws / "memory" / "functions"
+            funcs_dir.mkdir(parents=True, exist_ok=True)
+            dest = funcs_dir / f"{run_id}_step.py"
+            shutil.copy2(step_py, dest)
+            promoted.append(dest)
+
+        for ref in result.get("artifact_refs", []):
+            src = ws / ref
+            if not src.exists() or src.is_symlink():
+                continue
+            suffix = src.suffix.lower()
+            if suffix in (".csv", ".xlsx", ".parquet", ".md", ".txt", ".json"):
+                dest_dir = ws / "artifacts"
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                base = src.name
+                dest = dest_dir / base
+                counter = 1
+                while dest.exists():
+                    stem = src.stem
+                    dest = dest_dir / f"{stem}_{counter}{suffix}"
+                    counter += 1
+                shutil.copy2(src, dest)
+                promoted.append(dest)
+
+        return promoted
+
     async def resume_approved_step(
         self,
         *,
@@ -1929,10 +1975,11 @@ class Orchestrator:
             plan_id=plan.id, step_id=step_id, decision="approved",
         )
         cancel = await self._acquire_run(state.run_id)
+        run_id = f"run_{uuid4().hex}"
         try:
             request = StepExecutionRequest(
                 id=contract.id,
-                workspace_id=contract.workspace_id, run_id=contract.run_id,
+                workspace_id=contract.workspace_id, run_id=run_id,
                 plan_id=contract.plan_id, step_id=contract.step_id,
                 workspace_dir=workspace_dir,
                 code=contract.code,
@@ -1945,33 +1992,42 @@ class Orchestrator:
             )
             handle = await self.worker.submit(request)
             yield StepTaskSubmitted(
-                ts=datetime.now(UTC), workspace_id=state.workspace_id, run_id=state.run_id,
+                ts=datetime.now(UTC), workspace_id=state.workspace_id, run_id=run_id,
                 task_id=handle.task_id, step_id=contract.step_id, plan_id=plan.id,
             )
             # Initial running status
             running_status = await self.worker.get_task(handle.task_id)
             if running_status is not None:
                 yield StepTaskStatusChanged(
-                    ts=datetime.now(UTC), workspace_id=state.workspace_id, run_id=state.run_id,
+                    ts=datetime.now(UTC), workspace_id=state.workspace_id, run_id=run_id,
                     task_id=handle.task_id, status=running_status,
                 )
             envelope = await self.worker.wait(handle.task_id)
             yield StepTaskStatusChanged(
-                ts=datetime.now(UTC), workspace_id=state.workspace_id, run_id=state.run_id,
+                ts=datetime.now(UTC), workspace_id=state.workspace_id, run_id=run_id,
                 task_id=handle.task_id, status=envelope.status,
             )
             yield StepCompleted(
-                ts=datetime.now(UTC), workspace_id=state.workspace_id, run_id=state.run_id,
+                ts=datetime.now(UTC), workspace_id=state.workspace_id, run_id=run_id,
                 task_id=handle.task_id, envelope=envelope,
             )
+            promoted = []
+            if envelope.status.status == "completed":
+                promoted = await self._promote_step_artifacts(
+                    workspace_dir, envelope.diagnostics.get("step_result_path", ""), run_id
+                )
+                _log.info("artifacts_promoted run_id=%s count=%d", run_id, len(promoted))
             yield ArtifactsReady(
-                ts=datetime.now(UTC), workspace_id=state.workspace_id, run_id=state.run_id,
+                ts=datetime.now(UTC), workspace_id=state.workspace_id, run_id=run_id,
                 step_id=contract.step_id, artifacts=envelope.artifacts,
             )
+            final_text = _summarize_step_execution(workspace_dir, envelope)
+            if promoted:
+                final_text += f"\n\nOutputs saved to: {', '.join(str(p.relative_to(Path(workspace_dir))) for p in promoted)}"
             yield FinalMessage(
-                ts=datetime.now(UTC), workspace_id=state.workspace_id, run_id=state.run_id,
+                ts=datetime.now(UTC), workspace_id=state.workspace_id, run_id=run_id,
                 assistant_message_id=f"asg_{uuid4().hex[:12]}",
-                text=_summarize_step_execution(workspace_dir, envelope),
+                text=final_text,
                 usage={},
             )
             _log.info("resume_approved_step end plan_id=%s step_id=%s status=%s",
