@@ -1471,13 +1471,12 @@ class Orchestrator:
             _log.info("run_agentic_turn end chat_id=%s iterations_done=%d", chat_id, iteration)
             return
 
-    async def _mirror_to_workspace(self, workspace_dir: Path, event: dict[str, Any]) -> None:
-        import json as _json
+    def _mirror_to_workspace(self, workspace_dir: Path, event: dict[str, Any]) -> None:
         telemetry_dir = workspace_dir / "state" / "telemetry"
         telemetry_dir.mkdir(parents=True, exist_ok=True)
-        path = telemetry_dir / "harness.events.jsonl"
+        path = telemetry_dir / "workspace-harness-events.jsonl"
         with path.open("a", encoding="utf-8") as f:
-            f.write(_json.dumps(event, default=str) + "\n")
+            f.write(json.dumps(event, default=str) + "\n")
 
     async def _build_durable_context_block(self, workspace_id: str, workspace_dir: Path) -> str:
         status_text = f"WORKSPACE: {workspace_id}"
@@ -1630,7 +1629,7 @@ class Orchestrator:
         user_msg_id = f"msg_{uuid4().hex[:12]}"
         ts = datetime.now(UTC)
         _log.info("run_turn turn_id=%s mode=%s input_chars=%d", turn_id, active_mode, len(user_input))
-        await self._mirror_to_workspace(workspace_dir, {
+        self._mirror_to_workspace(workspace_dir, {
             "event": "turn_start",
             "turn_id": turn_id,
             "mode": active_mode,
