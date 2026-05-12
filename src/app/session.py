@@ -291,7 +291,13 @@ class AppSession:
             yield snap
 
     def get_pending_plan(self, plan_id: str):
-        return self.orchestrator._pending_plans.get(plan_id)
+        """Retrieve a pending plan by id, delegating to orchestrator."""
+        plan = self.orchestrator._pending_plans.get(plan_id)
+        if plan is None:
+            return None
+        if hasattr(plan, "model_dump"):
+            return plan.model_dump(mode="json")
+        return plan
 
 
 # Migration alias — kept only so existing import sites resolve until cleanup.
