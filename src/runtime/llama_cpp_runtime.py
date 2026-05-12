@@ -307,6 +307,12 @@ class LlamaCppRuntime:
                 yield RuntimeEvent(
                     type="finish", request_id=rid, seq=seq.next(),
                     finish_reason=finish_reason, usage=chunk.get("usage", {}),
+                    diagnostics=(
+                        {"empty_stream": True} if finish_reason == "empty_stream"
+                        else {"parse_error_snippet": getattr(self, '_last_parse_error', "")[:200]} if finish_reason == "parse_error"
+                        else {"total_deltas": seq.value} if finish_reason == "truncated"
+                        else None
+                    ),
                 )
 
     async def stream(self, request: RuntimeRequest) -> AsyncIterator[RuntimeEvent]:

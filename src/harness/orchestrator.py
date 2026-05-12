@@ -1328,7 +1328,6 @@ class Orchestrator:
                    chat_id, len(user_input), requested_mode, max_iterations)
 
         current_input = user_input
-        retried_empty = False
         retried_malformed = False
         retried_plan_repair = False
         handoff_used = False
@@ -1340,6 +1339,7 @@ class Orchestrator:
             tool_calls: list[dict[str, Any]] = []
             paused_tool_calls: list[dict[str, Any]] = []
             empty_failed = False
+            empty_failed_ec: str | None = None
             malformed_failed = False
             approval_pending = False
             plan_analysis_error: str | None = None
@@ -1363,6 +1363,7 @@ class Orchestrator:
                 elif isinstance(ev, TurnFailed):
                     if ev.error_code in ("empty_output", "empty_stream"):
                         empty_failed = True
+                        empty_failed_ec = ev.error_code
                     else:
                         msg = (ev.failure_summary or "").lower()
                         if "malformed tool" in msg or "tool_call" in msg or "modelbehavior" in msg:
@@ -1446,15 +1447,12 @@ class Orchestrator:
                 first_iter = False
                 continue
 
-            if empty_failed and not retried_empty:
-                retried_empty = True
-                current_input = (
-                    f"{user_input}\n\n"
-                    "(Earlier reply was empty. Provide a brief direct answer or, "
-                    "if you need workspace data, emit one <tool_call>.)"
-                )
-                first_iter = False
-                continue
+            if empty_failed:
+                _log.info("agentic_retry_empty error_code=%s iteration=%d", empty_failed_ec, iteration)
+                iteration += 1
+                if iteration < max_iterations:
+                    yield TurnPaused(reason="awaiting_tool_dispatch")
+                    continue
 
             if malformed_failed and not retried_malformed:
                 retried_malformed = True
