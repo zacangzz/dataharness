@@ -79,5 +79,12 @@ def configure_logging(log_dir: Path | str) -> Path:
         if layer != Layer.BOOTSTRAP.value:
             logger.addHandler(_handler(log_path / f"{layer}.log"))
 
+    for name in ("harness", "persistence"):
+        lg = logging.getLogger(name)
+        _clear_handlers(lg)
+        lg.addHandler(_handler(log_path / f"{name}.log"))
+        lg.addFilter(TelemetryContextFilter())
+        lg.setLevel(logging.DEBUG)
+
     _install_exception_hooks()
     return log_path

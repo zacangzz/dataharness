@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -10,6 +11,8 @@ from harness.db import WorkspaceDb
 from observability import Telemetry, resolve_telemetry_dir
 from observability.events import EventKind, Layer
 
+_log = logging.getLogger("persistence")
+
 
 class HarnessPersistence:
     def __init__(self, db: WorkspaceDb, telemetry: Telemetry | None = None) -> None:
@@ -17,9 +20,11 @@ class HarnessPersistence:
         self.telemetry = telemetry or Telemetry(resolve_telemetry_dir())
 
     def save_model(self, table: str, key_name: str, key_value: str, record: BaseModel) -> None:
+        _log.info("save_model table=%s key_name=%s key_value=%s", table, key_name, key_value)
         self.db.save_record(table, key_name, key_value, record.model_dump(mode="json"))
 
     def save_dict(self, table: str, key_name: str, key_value: str, record: dict[str, object]) -> None:
+        _log.info("save_dict table=%s key_name=%s key_value=%s", table, key_name, key_value)
         start = self.telemetry.emit(
             Layer.PERSISTENCE,
             EventKind.PERSISTENCE_WRITE_START,

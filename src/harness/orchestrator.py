@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime
@@ -52,6 +53,8 @@ _TURN_MARKER_RE = re.compile(
 )
 _READ_FILE_CHAR_CAP = 32_000
 _PLAN_ALLOWED_PACKAGES = ["pathlib", "csv", "json", "math", "statistics", "pandas", "numpy"]
+
+_log = logging.getLogger("harness")
 
 
 def _sanitize_assistant_text(text: str) -> str:
@@ -217,6 +220,8 @@ class Orchestrator:
             self.persistence.telemetry = self.telemetry
         self.config = config or SessionConfig()
         self.app_root = app_root or Path.cwd()
+        _log.info("Orchestrator.__init__ workspace_id=%s app_root=%s",
+                   getattr(self.config, "workspace_id", None), self.app_root)
         self._active_run_id: str | None = None
         self._stop_after_step_run_ids: set[str] = set()
         self._step_action_requests: dict[str, str] = {}
@@ -1219,6 +1224,7 @@ class Orchestrator:
     async def compact_chat_history(
         self, chat_id: str, reason: str = "user_requested",
     ) -> AsyncIterator[HarnessEvent]:
+        _log.info("compact_chat_history start chat_id=%s reason=%s", chat_id, reason)
         rec = await self.chat_store.view_chat(chat_id)
         prior_count = rec.compaction_count
         if self.compactor is None:
@@ -1243,6 +1249,7 @@ class Orchestrator:
                 replaced_turn_count=replaced,
                 compaction_count=snapshot.compaction_count,
             )
+        _log.info("compact_chat_history end chat_id=%s status=%s", chat_id, status)
 
     async def apply_doctor_actions(
         self, *, report_id: str, decision: str, workspace_id: str, workspace_dir: Path,
@@ -1317,6 +1324,8 @@ class Orchestrator:
         active_mode = requested_mode
         prompt_text = prompt_provider(active_mode)
         durable = await self._build_durable_context_block(state.workspace_id, workspace_dir)
+        _log.info("run_agentic_turn chat_id=%s user_input_chars=%d requested_mode=%s max_iterations=%d",
+                   chat_id, len(user_input), requested_mode, max_iterations)
 
         current_input = user_input
         retried_empty = False
@@ -1326,6 +1335,7 @@ class Orchestrator:
         first_iter = True
 
         for iteration in range(max_iterations):
+            _log.info("run_agentic_turn iteration=%d mode=%s", iteration, active_mode)
             buffer: list[str] = []
             tool_calls: list[dict[str, Any]] = []
             paused_tool_calls: list[dict[str, Any]] = []
@@ -1458,7 +1468,16 @@ class Orchestrator:
                 first_iter = False
                 continue
 
+            _log.info("run_agentic_turn end chat_id=%s iterations_done=%d", chat_id, iteration)
             return
+
+    async def _mirror_to_workspace(self, workspace_dir: Path, event: dict[str, Any]) -> None:
+        import json as _json
+        telemetry_dir = workspace_dir / "state" / "telemetry"
+        telemetry_dir.mkdir(parents=True, exist_ok=True)
+        path = telemetry_dir / "harness.events.jsonl"
+        with path.open("a", encoding="utf-8") as f:
+            f.write(_json.dumps(event, default=str) + "\n")
 
     async def _build_durable_context_block(self, workspace_id: str, workspace_dir: Path) -> str:
         status_text = f"WORKSPACE: {workspace_id}"
@@ -1610,6 +1629,16 @@ class Orchestrator:
         turn_id = f"turn_{uuid4().hex[:12]}"
         user_msg_id = f"msg_{uuid4().hex[:12]}"
         ts = datetime.now(UTC)
+        _log.info("run_turn turn_id=%s mode=%s input_chars=%d", turn_id, active_mode, len(user_input))
+        await self._mirror_to_workspace(workspace_dir, {
+            "event": "turn_start",
+            "turn_id": turn_id,
+            "mode": active_mode,
+            "input_chars": len(user_input),
+            "chat_id": chat_id,
+            "run_id": run_id,
+            "ts": ts.isoformat(),
+        })
         try:
             yield TurnStarted(
                 ts=ts, workspace_id=state.workspace_id, chat_id=chat_id, run_id=run_id,
@@ -1860,6 +1889,7 @@ class Orchestrator:
         contract = self._pending_contracts.pop((state.run_id, step_id), None)
         if contract is None:
             contract = StepContract.model_validate(contract_payload)
+        _log.info("resume_approved_step start plan_id=%s step_id=%s status=approved", pid, step_id)
         yield ApprovalResolved(
             ts=datetime.now(UTC), workspace_id=state.workspace_id, run_id=state.run_id,
             plan_id=plan.id, step_id=step_id, decision="approved",
@@ -1910,6 +1940,8 @@ class Orchestrator:
                 text=_summarize_step_execution(workspace_dir, envelope),
                 usage={},
             )
+            _log.info("resume_approved_step end plan_id=%s step_id=%s status=%s",
+                       pid, step_id, getattr(envelope.status, "status", "unknown"))
         finally:
             await self._release_run(state.run_id)
             if pid:

@@ -94,6 +94,8 @@ class AsyncWorkspaceManager:
         if not workspace_dir.exists():
             raise WorkspaceNotFound(workspace_id=workspace_id)
         self._register(workspace_id, workspace_dir)
+        telemetry_dir = Path(workspace_dir) / "state" / "telemetry"
+        telemetry_dir.mkdir(parents=True, exist_ok=True)
         return await self._summary(workspace_id)
 
     async def ingest_files(self, workspace_id: str, paths: list[Path]) -> WorkspaceIngestResult:

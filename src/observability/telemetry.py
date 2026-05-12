@@ -73,6 +73,7 @@ class Telemetry:
     def __init__(self, log_dir: Path | str) -> None:
         self.log_dir = Path(log_dir)
         self._lock = threading.Lock()
+        self._harness_writer = None
 
     def emit(
         self,
@@ -99,6 +100,13 @@ class Telemetry:
         with self._lock:
             with event_path.open("a", encoding="utf-8") as stream:
                 stream.write(event.model_dump_json() + "\n")
+            if layer == Layer.HARNESS:
+                if self._harness_writer is None:
+                    harness_path = self.log_dir.parent / "telemetry" / "harness.events.jsonl"
+                    harness_path.parent.mkdir(parents=True, exist_ok=True)
+                    self._harness_writer = open(harness_path, "a", encoding="utf-8")
+                self._harness_writer.write(event.model_dump_json() + "\n")
+                self._harness_writer.flush()
         logging.getLogger(layer.value).info(
             "%s %s",
             event.kind.value,
