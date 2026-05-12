@@ -1,0 +1,16 @@
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+from typing import Protocol
+
+from runtime.types import RuntimeEvent, RuntimeRequest, RuntimeStatus, TokenPressure
+
+
+class Runtime(Protocol):
+    chat_format: str
+
+    async def stream(self, request: RuntimeRequest) -> AsyncIterator[RuntimeEvent]: ...
+    async def context_window(self) -> int: ...
+    async def token_pressure(self, request: RuntimeRequest) -> TokenPressure: ...
+    async def validate_request(self, request: RuntimeRequest) -> None: ...
+    async def status(self) -> RuntimeStatus: ...
