@@ -1449,9 +1449,12 @@ class Orchestrator:
 
             if empty_failed:
                 _log.info("agentic_retry_empty error_code=%s iteration=%d", empty_failed_ec, iteration)
-                iteration += 1
                 if iteration < max_iterations:
-                    yield TurnPaused(reason="awaiting_tool_dispatch")
+                    yield TurnPaused(
+                        ts=datetime.now(UTC), workspace_id=state.workspace_id,
+                        chat_id=chat_id, run_id=state.run_id,
+                        reason="awaiting_tool_dispatch",
+                    )
                     continue
 
             if malformed_failed and not retried_malformed:
@@ -1737,6 +1740,7 @@ class Orchestrator:
             buffer: list[str] = []
             collected_tool_calls: list[dict[str, Any]] = []
             usage: dict[str, int] = {}
+            terminal_finish_reason: str | None = None
             async with self._runtime_lock:
                 async for ev in self.runtime.stream(request):
                     if cancel.is_set():
@@ -1766,6 +1770,7 @@ class Orchestrator:
                         )
                     elif ev.type == "finish":
                         usage = ev.usage or {}
+                        terminal_finish_reason = ev.finish_reason
                     elif ev.type == "error":
                         yield TurnFailed(
                             ts=datetime.now(UTC), workspace_id=state.workspace_id, chat_id=chat_id, run_id=run_id,
@@ -1789,11 +1794,12 @@ class Orchestrator:
 
             # Empty buffer + no tool_calls → fail loudly; do NOT persist hollow row.
             if not assistant_text.strip():
+                failure_error_code = "empty_stream" if terminal_finish_reason == "empty_stream" else "empty_output"
                 yield TurnFailed(
                     ts=datetime.now(UTC), workspace_id=state.workspace_id, chat_id=chat_id, run_id=run_id,
                     failure_summary="Runtime produced no output.",
-                    error_code="empty_output",
-                    details={"usage": usage},
+                    error_code=failure_error_code,
+                    details={"usage": usage, "finish_reason": terminal_finish_reason},
                 )
                 return
 

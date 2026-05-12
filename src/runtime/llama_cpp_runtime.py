@@ -173,7 +173,7 @@ class LlamaCppRuntime:
         self._config = config
         self._status: RuntimeStatus = "loading"
         self._status_lock = threading.Lock()
-        self._last_parse_error = ""
+        self._last_parse_error: str = ""
         self.telemetry.emit(
             Layer.RUNTIME, EventKind.RUNTIME_INIT_START,
             payload={"model_path": config.model_path, "n_ctx": config.n_ctx},
@@ -300,19 +300,21 @@ class LlamaCppRuntime:
                 if finish_reason == "unknown" or finish_reason is None:
                     if seq.value == 0:
                         finish_reason = "empty_stream"
-                    elif hasattr(self, '_last_parse_error') and self._last_parse_error:
+                    elif self._last_parse_error:
                         finish_reason = "parse_error"
                     else:
                         finish_reason = "truncated"
+                diagnostics: dict[str, Any] | None = None
+                if finish_reason == "empty_stream":
+                    diagnostics = {"empty_stream": True}
+                elif finish_reason == "parse_error":
+                    diagnostics = {"parse_error_snippet": self._last_parse_error[:200]}
+                elif finish_reason == "truncated":
+                    diagnostics = {"total_deltas": seq.value}
                 yield RuntimeEvent(
                     type="finish", request_id=rid, seq=seq.next(),
                     finish_reason=finish_reason, usage=chunk.get("usage", {}),
-                    diagnostics=(
-                        {"empty_stream": True} if finish_reason == "empty_stream"
-                        else {"parse_error_snippet": getattr(self, '_last_parse_error', "")[:200]} if finish_reason == "parse_error"
-                        else {"total_deltas": seq.value} if finish_reason == "truncated"
-                        else None
-                    ),
+                    diagnostics=diagnostics,
                 )
 
     async def stream(self, request: RuntimeRequest) -> AsyncIterator[RuntimeEvent]:

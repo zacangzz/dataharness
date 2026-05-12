@@ -200,6 +200,7 @@ async def test_empty_output_retried_once(tmp_path, workspace):
 
 @pytest.mark.asyncio
 async def test_empty_output_gives_up_after_one_retry(tmp_path, workspace):
+    """Empty output is retried until max_iterations exhausted."""
     runtime = FakeRuntime([_Scenario(text=""), _Scenario(text="")])
     orch = Orchestrator(runtime=runtime, app_root=tmp_path)
     events = [e async for e in orch.run_agentic_turn(
@@ -207,8 +208,8 @@ async def test_empty_output_gives_up_after_one_retry(tmp_path, workspace):
         requested_mode="interaction", prompt_provider=_provider(),
     )]
     fails = [e for e in events if e.event_name == "TurnFailed"]
-    assert len(fails) == 2
-    assert len(runtime.calls) == 2
+    assert len(fails) == 4
+    assert len(runtime.calls) == 4
 
 
 @pytest.mark.asyncio

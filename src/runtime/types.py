@@ -5,7 +5,6 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
-KNOWN_FINISH_REASONS = frozenset({"stop", "length", "tool_calls", "empty_stream", "parse_error", "truncated"})
 
 
 class RuntimeMessage(BaseModel):
