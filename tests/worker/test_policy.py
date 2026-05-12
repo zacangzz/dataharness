@@ -47,7 +47,7 @@ def test_policy_rejects_disallowed_imports_network_and_shell(tmp_path: Path) -> 
     )
     validator.validate_code_imports("import json\nprint(json.dumps({'ok': True}))")
     with pytest.raises(WorkerPolicyError, match="package not allowed"):
-        validator.validate_code_imports("import pandas as pd")
+        validator.validate_code_imports("import scipy")
     with pytest.raises(WorkerPolicyError, match="network import not allowed"):
         validator.validate_code_imports("import socket")
     with pytest.raises(WorkerPolicyError, match="shell import not allowed"):
