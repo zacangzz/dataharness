@@ -5,6 +5,9 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
+KNOWN_FINISH_REASONS = frozenset({"stop", "length", "tool_calls", "empty_stream", "parse_error", "truncated"})
+
+
 class RuntimeMessage(BaseModel):
     role: Literal["system", "user", "assistant", "tool"]
     content: str
@@ -30,7 +33,7 @@ class RuntimeEvent(BaseModel):
     seq: int
     text: str | None = None
     tool_call: dict[str, Any] | None = None
-    finish_reason: Literal["stop", "length", "tool_call", "cancelled", "error"] | None = None
+    finish_reason: Literal["stop", "length", "tool_call", "cancelled", "error", "empty_stream", "parse_error", "truncated"] | None = None
     usage: dict[str, int] | None = None
     error_code: str | None = None
     error_message: str | None = None

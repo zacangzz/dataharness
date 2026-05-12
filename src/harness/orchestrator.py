@@ -1361,7 +1361,7 @@ class Orchestrator:
                 elif isinstance(ev, ApprovalRequired):
                     approval_pending = True
                 elif isinstance(ev, TurnFailed):
-                    if ev.error_code == "empty_output":
+                    if ev.error_code in ("empty_output", "empty_stream"):
                         empty_failed = True
                     else:
                         msg = (ev.failure_summary or "").lower()
