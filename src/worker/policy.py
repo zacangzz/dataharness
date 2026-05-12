@@ -7,7 +7,14 @@ from worker.models import PermissionEnvelope, ResourceLimits
 
 NETWORK_MODULES = frozenset({"socket", "urllib", "http", "requests"})
 SHELL_MODULES = frozenset({"subprocess", "pty", "shlex"})
-STDLIB_ALLOWLIST = frozenset({"pathlib", "json", "csv", "_csv", "math", "statistics", "time"})
+STDLIB_ALLOWLIST = frozenset({
+    "pathlib", "csv", "json", "math", "statistics", "pandas", "numpy",
+    "tabulate",
+    "openpyxl",
+    "xlrd",
+    "_csv",
+    "time",
+})
 
 
 class WorkerPolicyError(ValueError):

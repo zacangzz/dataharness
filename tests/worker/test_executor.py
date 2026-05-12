@@ -232,3 +232,36 @@ async def test_envelope_exists_even_when_policy_validation_fails(tmp_path: Path)
     assert env.status.status == "failed"
     assert (workspace / env.diagnostics["step_result_path"]).exists()
     assert (workspace / env.diagnostics["step_report_path"]).exists()
+
+
+async def test_executor_allows_pandas_to_markdown(tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "data").mkdir()
+    (ws / "data" / "test.csv").write_text("a,b\n1,2\n3,4\n")
+    (ws / "artifacts" / "tmp").mkdir(parents=True)
+
+    executor = PythonStepExecutor()
+    request = StepExecutionRequest(
+        id="step_md_1",
+        workspace_id="w_test",
+        workspace_dir=ws,
+        run_id="run_test_md",
+        plan_id="plan_test",
+        step_id="step_1",
+        code='import pandas as pd\ndf = pd.read_csv("data/test.csv")\nprint(df.to_markdown())\n',
+        declared_inputs={},
+        workspace_paths={"tmp_root": "artifacts/tmp"},
+        permission_envelope=PermissionEnvelope(
+            allowed_read_paths=["data/test.csv"],
+            registered_artifact_paths=[],
+            allowed_write_roots=["artifacts/tmp"],
+            allowed_packages=["pandas", "numpy", "tabulate", "pathlib", "csv"],
+        ),
+        expected_output_contract=[],
+        run_metadata={"attempt": 1},
+        resource_limits=ResourceLimits(timeout_seconds=30, memory_mb=1024, artifact_bytes=100_000),
+    )
+    handle = await executor.submit(request)
+    envelope = await executor.wait(handle.task_id)
+    assert envelope.status.status == "completed"

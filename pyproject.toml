@@ -6,6 +6,7 @@ dependencies = [
   "llama-cpp-python",
   "numpy",
   "pandas",
+  "tabulate",
   "pydantic>=2.0",
   "psutil",
   "textual>=8.2.4",
