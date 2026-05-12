@@ -130,7 +130,8 @@ async def test_derived_column_transformation_writes_summary_and_csv(tmp_path: Pa
     assert completed.envelope.status.status == "completed"
     artifact_names = {Path(path).name for path in completed.envelope.artifacts}
     assert {"result.txt", "transformed_sales.csv"} <= artifact_names
-    transformed = workspace / "artifacts" / "tmp" / state.run_id / "step_1" / "transformed_sales.csv"
+    submitted = next(e for e in resume_events if e.event_name == "StepTaskSubmitted")
+    transformed = workspace / "artifacts" / "tmp" / submitted.run_id / "step_1" / "transformed_sales.csv"
     assert "5.0" in transformed.read_text()
     final = next(e for e in resume_events if e.event_name == "FinalMessage")
     assert "| amount | units | revenue_per_unit |" in final.text
