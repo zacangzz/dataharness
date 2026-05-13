@@ -5,6 +5,7 @@ from pathlib import Path
 from harness.context import ContextManager
 from harness.db import WorkspaceDb
 from harness.doctor import Doctor
+from harness.knowledge import KnowledgeManager
 from harness.orchestrator import Orchestrator
 from harness.persistence import HarnessPersistence
 from observability import Telemetry, resolve_telemetry_dir
@@ -35,6 +36,7 @@ def build_orchestrator(
         worker=PythonStepExecutor(),
         persistence=persistence,
         doctor=Doctor(),
+        knowledge_manager=KnowledgeManager(workspace_dir=workspace_dir, persistence=persistence),
         telemetry=telemetry,
         app_root=app_root,
     )

@@ -168,10 +168,12 @@ class AppSession:
 
     async def handle_doctor_approval(
         self, *, state: RunStateRecord, workspace_dir: Path, report_id: str, decision: str,
+        action_ids: list[str] | None = None,
     ) -> AsyncIterator[AppEvent]:
         async for h_ev in self.orchestrator.apply_doctor_actions(
             report_id=report_id, decision=decision,
             workspace_id=state.workspace_id, workspace_dir=workspace_dir,
+            action_ids=action_ids,
         ):
             yield to_app_event(h_ev)
 

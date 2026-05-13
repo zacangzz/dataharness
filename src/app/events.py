@@ -126,6 +126,7 @@ class AppDoctorReportReady(AppEvent):
     report_id: str
     summary_counts: dict[str, int] = Field(default_factory=dict)
     recommendations: list[str] = Field(default_factory=list)
+    action_records: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class AppChatHistoryCompacted(AppEvent):

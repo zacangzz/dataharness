@@ -1,15 +1,35 @@
 # Collection of Outstanding Issues
 
-## Runtime `enable_reasoning_stream` flag is not enforced (OPEN 2026-05-12)
+## Doctor review UI has duplicate fields/handlers and unawaited async apply path (RESOLVED 2026-05-14)
+- Observed while updating `CODEMAP.md` against the current worktree.
+- `src/app/events.py` defines `AppDoctorReportReady.action_records` twice; Pydantic will keep the latter definition, but the duplication is noisy and easy to drift.
+- `src/app/tui/widgets.py:ApprovalBanner.__init__` initializes `_doctor_mode`, `_doctor_report_id`, and `_doctor_actions` three times.
+- `src/app/tui/app.py` defines `_on_doctor_accept_all`, `_on_doctor_apply_selected`, `_on_doctor_reject_all`, and async `_apply_doctor_decisions` twice. The first handler set calls the async apply method without awaiting or scheduling it, and the second set shadows the first definitions at class creation time.
+- Suggested fix: keep one handler set, schedule async application through `self.run_worker(...)` or `asyncio.create_task(...)` consistently, and add a TUI regression test for applying selected doctor actions.
+- Fix pass 2026-05-14: removed the duplicate `action_records` field, duplicate banner state initialization, duplicate doctor button handlers, and unawaited async apply path. Doctor review now uses `ApprovalBanner.get_doctor_decisions()`, schedules `_stream_doctor_approval(...)` via Textual workers, passes selected action ids through `AppSession` to `Orchestrator.apply_doctor_actions(..., action_ids=...)`, and treats an explicit empty selection as applying no actions.
+- Fix pass 2026-05-14: doctor review now uses a dedicated `#doctor_review` container so normal code-approval controls survive `show_doctor_review(...)`; stale clarification prompts are suppressed/hidden when the doctor banner owns approval; normal `a/r/v` approval keybindings are ignored in doctor mode.
+- Verification: `uv run pytest tests/harness/test_doctor_apply.py tests/app/test_doctor_flow.py -q` (`7 passed`), `uv run pytest tests/app/tui/test_approval_banner.py tests/app/tui/test_textual_app.py -q` (`21 passed`).
+
+## Runtime `enable_reasoning_stream` flag is not enforced (RESOLVED 2026-05-14)
 - Observed while checking Gemma 4 Layer 1 runtime settings: `RuntimeConfig.enable_reasoning_stream` defaults to `True` and is asserted in `tests/runtime/test_config.py`, but `src/runtime/llama_cpp_runtime.py` does not read the flag.
 - Current behavior always emits `reasoning_delta` when llama.cpp provides `delta["reasoning_content"]`, and always parses Gemma `<|think|>...</|think|>` blocks through `split_gemma_think_text`, regardless of the config value.
 - Suggested fix: either remove the unused setting if reasoning streaming is always intended, or make `emit_content_events`/`_sync_event_iterator` honor the flag and add tests for both enabled and disabled behavior.
+- Fix pass 2026-05-14: `LlamaCppRuntime` now gates both llama `reasoning_content` deltas and Gemma `<|think|>...</|think|>` parsing through `RuntimeConfig.enable_reasoning_stream`; disabled reasoning is dropped rather than emitted as `text_delta`.
+- Verification: `uv run pytest tests/runtime/test_runtime_async_streaming.py tests/runtime/test_runtime_tool_call_integration.py -q` (`18 passed`); expanded parser regression set `uv run pytest tests/runtime/test_eos_stripping.py tests/runtime/test_runtime_async_streaming.py tests/runtime/test_runtime_tool_call_integration.py -q` (`27 passed`).
 
-## Reasoning deltas are not consumed by a reasoning-aware app path (OPEN 2026-05-12)
+## Reasoning deltas are not consumed by a reasoning-aware app path (RESOLVED 2026-05-14)
 - Observed while tracing the v1 spec reasoning requirement: Layer 1 emits `RuntimeEvent(type="reasoning_delta")`, Layer 3 maps it to `RuntimeDelta(delta_type="reasoning")`, and Layer 4 maps it to `AppRuntimeDelta(delta_type="reasoning")`.
 - No harness decision path, prompt-package record path, provenance path, or persistence path consumes reasoning as reasoning. `PromptPackage.reasoning_capture_policy` exists in `src/harness/control.py`, but the active app prompt package type in `src/app/agents/types.py` has no corresponding field.
 - The TUI handler sends every `AppRuntimeDelta` to `ConversationPane.append_assistant_delta`, and that method appends `event.text` without checking `delta_type`; reasoning text can therefore appear temporarily as assistant stream text until `FinalMessage` overwrites the block.
 - Suggested fix: define the policy first. Either suppress/drop reasoning deltas outside trace telemetry, or add an explicit reasoning sink that is not persisted as assistant answer text and is gated by a real prompt-package/runtime policy.
+- Fix pass 2026-05-14: Layer 4 treats reasoning deltas as non-transcript runtime activity. `ConversationPane.append_assistant_delta` now appends only `delta_type="text"` and returns without creating a streaming assistant block for reasoning/tool-call deltas; `DataHarnessApp._handle_runtime_delta` still updates trace state.
+- Verification: `uv run pytest tests/app/tui/test_event_streaming.py tests/app/tui/test_run_trace.py -q` (`9 passed`).
+
+## Runtime content parser leaked later tool calls and stale parse errors (RESOLVED 2026-05-14)
+- Observed during Task 3 review: after one complete `<tool_call>...</tool_call>`, `emit_content_events` emitted the remaining tail as `text_delta`, so a second tool call in the same chunk or split across the tail could leak as visible assistant text instead of a structured `tool_call`.
+- The runtime also kept parse-error state on the `LlamaCppRuntime` instance, so a later stream ending with `finish_reason="unknown"` could inherit stale parse diagnostics from a previous request.
+- Fix: `emit_content_events` now loops through pending content until no complete tool block remains, buffering partial markers as before; parse-error diagnostics are local to each `_sync_event_iterator` call; sequence tests now assert contiguous `0..n-1` values.
+- Verification: `uv run pytest tests/runtime/test_eos_stripping.py tests/runtime/test_runtime_async_streaming.py tests/runtime/test_runtime_tool_call_integration.py -q` (`27 passed`).
 
 ## Packaged worker subprocess launches TUI and times out (RESOLVED 2026-05-11)
 - Observed in latest packaged run `dist/chats/w_0001/chat_f6e9bc91d1c0/messages.jsonl`: user asked `calculate sum of amount in sales`; the generated step was trivial pandas/pathlib code, but Layer 2 reported `execution timed out`.
@@ -25,7 +45,7 @@
 - Fix pass 2026-05-11: made transcript message blocks focusable, surfaced the copy binding in the footer, and added a last-assistant-reply fallback so `Ctrl+C`/`Cmd+C` remains useful even when no transcript block is focused. Added regression coverage in `tests/app/tui/test_copy_text.py`.
 - Fix pass 2026-05-11: Textual's clipboard is app-local and OSC52 is terminal-dependent, so universal copy/paste required a Layer 4 native clipboard provider instead of a mac-only patch. Added `src/app/tui/clipboard.py` with best-effort macOS/Windows/Linux command providers, kept Textual local clipboard as fallback, and added `Ctrl+V`/`Cmd+V` paste into the prompt editor only. Sidebar/status selection remains intentionally out of scope. Covered by `tests/app/tui/test_clipboard.py` and updated copy/paste action tests.
 
-## Latest dist analysis run has polluted chat output, failed duplicate worker dispatch, and no reusable script promotion (OPEN 2026-05-11)
+## Latest dist analysis run has polluted chat output, failed duplicate worker dispatch, and no reusable script promotion (RESOLVED 2026-05-14)
 - Observed in latest packaged run logs on 2026-05-11. Latest chat is `dist/chats/w_0001/chat_3592e871dd9c/messages.jsonl` with mtime `2026-05-11 09:46:01` local.
 - Conversation tags leaked into persisted assistant text: `end_of_turn>` on line 2 and `[/start_of_turn]` on lines 4 and 6. Current source has runtime EOS buffering tests, but the packaged `dist/dataharness` used for this run still produced dirty chat rows.
 - CSV content was returned as a fenced `csv` block rather than a markdown table for `read @data/customers.csv`. Root cause appears to be the `read_file` path returning raw content and relying on the model to format tabular content; `inspect_file` can expose rows/columns, but there is no deterministic markdown-table renderer for small CSV previews.
@@ -35,8 +55,9 @@
 - Current `resume_approved_step` emits `FinalMessage(text="Analysis complete. See ...")` without inspecting the envelope status or reading the result summary, so successful answers are unclear and failed executions can be summarized incorrectly.
 - Spec §6.12 says doctor should review tmp artifacts and promote reusable code to `memory/functions/`; current `DoctorRunner` only counts tmp files and returns no `DoctorActionProposed` records, and no `memory/functions/` exists in the latest workspace. The failed script remains only in `artifacts/tmp/.../step.py` and is not reusable.
 - Suggested fixes: make CSV preview/table rendering deterministic for small tabular reads; sanitize chat rows on persistence/display and rebuild the dist binary with the EOS fix; tighten `plan_analysis` validation or prompt/code-generation rules to reject disallowed imports before approval; make `resume_approved_step` branch on success vs failure and include `step_result.json`/`result.txt` contents; implement doctor tmp review/promotion into `memory/functions/` with freshness checks before reuse.
-- Fix pass 2026-05-11: added harness assistant-text sanitization for persisted final messages; kept `read_file` raw in Layer 3 and moved CSV/TSV fence table rendering to Layer 4 conversation display; added pre-approval `plan_analysis` import validation via `WorkerPolicyValidator`; changed approved-step final messages to summarize success/failure evidence; updated analyst prompt with the exact allowed imports; changed `DoctorRunner` tmp review to propose successful `step.py` promotion to `memory/functions/` while keeping failed step evidence. Remaining verification need: rebuild/run `dist/dataharness` to confirm packaged behavior no longer lags source.
+- Fix pass 2026-05-11: added harness assistant-text sanitization for persisted final messages; kept `read_file` raw in Layer 3 and moved CSV/TSV fence table rendering to Layer 4 conversation display; added pre-approval `plan_analysis` import validation via `WorkerPolicyValidator`; changed approved-step final messages to summarize success/failure evidence; updated analyst prompt with the exact allowed imports; changed `DoctorRunner` tmp review to propose successful `step.py` promotion to `memory/functions/` while keeping failed step evidence.
 - Fix pass 2026-05-11: fixed `worker.sandbox_bootstrap` import handling for pandas/numpy. Relative imports with an empty module name now delegate to Python, and package dependency imports are allowed only while an already-allowed package frame is active; user-level shell/network imports remain blocked and subprocess/socket operations remain audit-blocked. Added `test_executor_allows_declared_pandas_numpy_imports` to reproduce the sales calculation path. Rebuilt `dist/dataharness` and verified the frozen private worker path prints `total_sales=30; total_units=5; average=6.0`.
+- Verification pass 2026-05-14: `uv run pytest tests/packaging/test_build_app_script.py -q` passed, `bash scripts/build_app.sh` rebuilt `dist/dataharness`, and `./dist/dataharness -m worker.sandbox_bootstrap /private/tmp/dataharness-missing-sandbox.json` failed fast from `worker.sandbox_bootstrap` with `FileNotFoundError` for the missing config path instead of launching the TUI or hanging.
 
 ## Git object database is missing tracked objects (RESOLVED 2026-05-10)
 - Observed 2026-05-09 while verifying a Python 3.14 metadata update: `git status --short` failed with `fatal: unable to read tree (f7efc85010a5980a7ba2b917c7bc8df3e1732f49)` and `git diff -- pyproject.toml uv.lock` failed with `fatal: unable to read 211498efae0897414e1243c56e4c18f7c9de1b19`.
@@ -45,3 +66,9 @@
 - Fix: backed up corrupted `.git` to `.git.broken-2026-05-10/` (still on disk, ignored via `.gitignore`), ran `git init -b main`, staged working tree (277 files), committed as `7f654ea initial (recovered from corrupted object db)`.
 - Post-fix `git fsck` shows only dangling blobs (orphan objects, cleared by `git gc`). `git status` and `git diff` work normally.
 - Follow-up: delete `.git.broken-2026-05-10/` once confident nothing else needed from it; consider adding a remote so this is recoverable next time.
+
+## `/compact` command silently does nothing (FIXED 2026-05-12)
+- Observed in `chat_1c12bd35d929`: the compact function did not work.
+- Root cause: `handle_direct_command` in orchestrator builds `CommandContext.chat_id` from `arguments.get("chat_id")`. The compact command descriptor has `arguments=[]`, so `chat_id` resolves to `None`. `_handle_compact` checks `if ctx.chat_id:` and silently skips all compaction, yielding only `CommandStarted`/`CommandCompleted` with no `ChatHistoryCompacted` events.
+- The auto-compaction path (`run_agentic_turn` → `compact_chat_history(chat_id)`) works because it has the real chat_id from the turn context.
+- Fix: `_stream_command` in `app.py` injects `arguments["chat_id"] = self._active_chat_id` for the compact command before passing to `handle_direct_command`. This covers both the slash-command path and the command-palette path.

@@ -40,7 +40,11 @@ src/cli.py
 src/app/__init__.py                     → (none)
 src/app/events.py                       → (none)
 src/app/event_mapping.py                → app.events
-src/app/session.py                      → app.agents.prompt_packages, app.agents.router, app.event_mapping
+src/app/session.py                      → app.agents.prompt_packages, app.agents.router, app.event_mapping,
+                                           app.events, harness.command_registry, harness.control,
+                                           harness.events, harness.exceptions, harness.orchestrator,
+                                           harness.status, observability, observability.events,
+                                           runtime.types
 src/app/agents/__init__.py              → app.agents.prompt_packages, app.agents.router
 src/app/agents/types.py                 → (none)
 src/app/agents/router.py                → (none)
@@ -56,7 +60,9 @@ src/app/tui/app.py                      → app.session, app.tui.clipboard, app.
                                            app.tui.prompt_bar, app.tui.prompt_editor,
                                            app.tui.run_trace, app.tui.screens, app.tui.widgets,
                                            app.tui.screens.workspace_manager,
-                                           app.tui.screens.file_ingest, app.tui.sidebar_sections
+                                           app.tui.screens.file_ingest, app.tui.sidebar_sections,
+                                           harness.command_registry, harness.control,
+                                           observability, observability.events
 src/app/tui/clipboard.py                → (none; stdlib subprocess/shutil/sys only)
 src/app/tui/models.py                   → (none)
 src/app/tui/commands.py                 → (none)
@@ -90,17 +96,21 @@ src/harness/context.py                  → (none)
 src/harness/control.py                  → (none)
 src/harness/db.py                       → (none)
 src/harness/doctor.py                   → harness.fingerprints, harness.validity
-src/harness/doctor_runner.py            → harness.doctor, harness.events
+src/harness/doctor_runner.py            → harness.doctor, harness.events, harness.knowledge, runtime.types
 src/harness/events.py                   → harness.status, runtime.types, worker.models
 src/harness/exceptions.py               → (none)
 src/harness/factory.py                  → harness.context, harness.db, harness.doctor,
-                                           harness.orchestrator, harness.persistence
+                                           harness.knowledge, harness.orchestrator,
+                                           harness.persistence, observability, runtime.protocol,
+                                           worker.executor
 src/harness/fingerprints.py             → (none)
 src/harness/knowledge.py                → harness.control, harness.persistence
 src/harness/orchestrator.py             → harness.chat, harness.command_registry, harness.context,
                                            harness.control, harness.doctor, harness.doctor_runner,
-                                           harness.events, harness.exceptions, harness.persistence,
+                                           harness.events, harness.exceptions, harness.knowledge,
+                                           harness.knowledge_intents, harness.persistence,
                                            harness.state_machine, harness.status, harness.workspace_async,
+                                           observability, runtime.protocol, runtime.types,
                                            worker.executor, worker.models, worker.policy
 src/harness/paths.py                    → (none)
 src/harness/persistence.py              → harness.control, harness.db
@@ -166,10 +176,10 @@ src/worker/sandbox_bootstrap.py         → (subprocess; no static src.* imports
 `HarnessRecord` ← `RunStateRecord`, `ModeSwitchEvent`, `ApprovalRecord`, `PlanStep`, `Plan`, `StepContract`, `ExecutionEnvelope`, `StepResult`, `PromptPackage`, `DoctorReport`, `TmpAction`, `ReviewProposal`, `MemoryUpdateProposal`
 
 **`HarnessEvent(BaseModel)` chain** (harness/events.py):
-`HarnessEvent` ← `TurnStarted`, `FinalMessage`, `TurnFailed`, `TurnCancelled`, `StatusChanged`, `WorkspaceHealthChanged`, `RuntimeStatusChanged`, `ModeActivated`, `ContextReloaded`, `PromptBuilt`, `ChatCreated`, `ChatSelected`, `ChatDeleted`, `ChatHistoryLoaded`, `ChatHistoryCompacted`, `CommandStarted`, `CommandProgress`, `CommandCompleted`, `RuntimeDelta`, `PlanReady`, `ApprovalRequired`, `ApprovalResolved`, `StepTaskSubmitted`, `StepTaskStatusChanged`, `StepCompleted`, `ArtifactsReady`, `DoctorStarted`, `DoctorFinding`, `DoctorActionProposed`, `DoctorReportReady`
+`HarnessEvent` ← `TurnStarted`, `FinalMessage`, `TurnFailed`, `TurnCancelled`, `TurnPaused`, `ModeHandoffAccepted`, `ToolCallExecuted`, `StatusChanged`, `WorkspaceHealthChanged`, `RuntimeStatusChanged`, `ModeActivated`, `ContextReloaded`, `PromptBuilt`, `ChatCreated`, `ChatSelected`, `ChatDeleted`, `ChatHistoryLoaded`, `ChatHistoryCompacted`, `DoctorNarrationReady`, `DoctorApprovalRequested`, `DoctorActionsApplied`, `CommandStarted`, `CommandProgress`, `CommandCompleted`, `RuntimeDelta`, `PlanReady`, `ApprovalRequired`, `ApprovalResolved`, `StepTaskSubmitted`, `StepTaskStatusChanged`, `StepCompleted`, `ArtifactsReady`, `DoctorStarted`, `DoctorFinding`, `DoctorActionProposed`, `DoctorReportReady`
 
 **`AppEvent(BaseModel)` chain** (app/events.py):
-`AppEvent` ← `AppTurnStarted`, `AppRuntimeDelta`, `AppFinalMessage`, `AppTurnFailed`, `AppTurnCancelled`, `AppStatusChanged`, `AppChatHistoryLoaded`, `AppApprovalRequired`, `AppCommandStarted`, `AppCommandProgress`, `AppCommandCompleted`, `AppDoctorFinding`, `AppDoctorReportReady`, `AppRaw`
+`AppEvent` ← `AppTurnStarted`, `AppRuntimeDelta`, `AppFinalMessage`, `AppTurnFailed`, `AppTurnCancelled`, `AppTurnPaused`, `AppModeHandoff`, `AppToolCallExecuted`, `AppStatusChanged`, `AppChatHistoryLoaded`, `AppApprovalRequired`, `AppCommandStarted`, `AppCommandProgress`, `AppCommandCompleted`, `AppDoctorFinding`, `AppDoctorReportReady`, `AppChatHistoryCompacted`, `AppDoctorNarrationReady`, `AppDoctorApprovalRequested`, `AppDoctorActionsApplied`, `AppRaw`
 
 **Exception hierarchies:**
 - `HarnessError(Exception)` (harness/exceptions.py) ← `ChatNotFound`, `ChatWorkspaceMismatch`, `ChatActiveDeletionBlocked`, `WorkspaceNotFound`, `RunAlreadyActive`, `WorkspaceSwitchBlocked`
@@ -207,13 +217,14 @@ src/worker/sandbox_bootstrap.py         → (subprocess; no static src.* imports
 ### Index C — Cross-file Call/Usage Map (selected hot paths)
 
 **`Orchestrator` (harness/orchestrator.py) is the hub:**
-- Builds: `ChatStore`, `ChatCompactor`, `RuntimeRequestBuilder` (chat.py); `Doctor`, `DoctorRunner` (doctor.py, doctor_runner.py); `ContextManager` (context.py); `HarnessStateMachine` (state_machine.py); `StatusBroker` (status.py); `AsyncWorkspaceManager` (workspace_async.py); `HarnessCommandRegistry` (command_registry.py); `HarnessPersistence` (persistence.py)
+- Builds: `ChatStore`, `ChatCompactor`, `RuntimeRequestBuilder` (chat.py); `Doctor`, `DoctorRunner` (doctor.py, doctor_runner.py); `ContextManager` (context.py); `HarnessStateMachine` (state_machine.py); `StatusBroker` (status.py); `AsyncWorkspaceManager` (workspace_async.py); `HarnessCommandRegistry` (command_registry.py); `HarnessPersistence` (persistence.py); optional `KnowledgeManager` (knowledge.py)
 - Yields: every `HarnessEvent` subclass from harness/events.py
 - Consumed by: `app.session.AppSession` (Layer 4 facade)
 
 **`AppSession` (app/session.py):**
 - Wraps `Orchestrator` (no direct runtime imports per layer rule)
 - Calls: `AgentModeRouter.route()`, `PromptPackageRegistry.load()`, `to_app_event()`
+- Calls `Orchestrator.run_agentic_turn()` for user turns and wraps doctor command output with narration/approval events.
 - Used by: `DataHarnessApp` (app/tui/app.py) — instantiated in `cli.build_app`
 
 **`build_orchestrator` (harness/factory.py)** is the only entry point that wires Layer 3 dependencies; called by `cli.build_app`.
@@ -230,16 +241,18 @@ src/worker/sandbox_bootstrap.py         → (subprocess; no static src.* imports
 - Path utilities: `build_step_tmp_dir`, `as_posix_workspace_relative` (worker/paths.py)
 - Used by `Orchestrator.resume_approved_step` (when wired) — currently invoked indirectly through code execution flow
 
-**`Doctor.run` (harness/doctor.py):**
+**`Doctor.run` / `DoctorRunner.run` (harness/doctor.py, harness/doctor_runner.py):**
 - Uses `lazy_fingerprint` (harness/fingerprints.py) → returns `FingerprintResult`
 - Uses `classify` + `ValidityState` (harness/validity.py)
 - Persists via `HarnessPersistence` (harness/persistence.py)
-- Driven by `DoctorRunner` (harness/doctor_runner.py) which yields events to Orchestrator
+- `DoctorRunner` emits deterministic source/tmp/pending-plan checks in `light/full` modes and runtime-backed semantic memory/script checks in `semantic/full` modes.
+- Workspace activation runs a light doctor pass; successful worker completion schedules a semantic doctor pass.
 
 **`KnowledgeManager.propose_update` (harness/knowledge.py):**
 - Returns `MemoryUpdateProposal` (harness/control.py)
 - `guarded_external_memory_write` enforces single-writer rule (always raises elsewhere)
 - Called from `harness.knowledge_intents.handle_knowledge_intent`
+- Also owns direct memory writes for doctor/knowledge workflows: notes, gaps, functions, preferences, and turn-id dedup metadata.
 
 **`ChatStore` (harness/chat.py):**
 - `cascade_delete_for_workspace` invoked by `AsyncWorkspaceManager.delete_workspace`
@@ -256,6 +269,7 @@ user keystroke
   → DataHarnessApp._stream_turn
   → AppSession.run_user_turn
   → AgentModeRouter.route + PromptPackageRegistry.load
+  → Orchestrator.run_agentic_turn
   → Orchestrator.run_turn
   → RuntimeRequestBuilder.build_messages
   → LlamaCppRuntime.stream (yields RuntimeEvent)
@@ -384,11 +398,16 @@ Module marker only.
 - **class** `AppFinalMessage(AppEvent)` — final assistant message + usage
 - **class** `AppTurnFailed(AppEvent)` — turn failure (summary, error_code)
 - **class** `AppTurnCancelled(AppEvent)` — turn cancellation w/ reason
+- **class** `AppTurnPaused(AppEvent)` — turn paused for tool dispatch or clarification
+- **class** `AppModeHandoff(AppEvent)` — agentic mode handoff notification
+- **class** `AppToolCallExecuted(AppEvent)` — harness tool-call result summary
 - **class** `AppStatusChanged(AppEvent)` — workspace status snapshot
 - **class** `AppChatHistoryLoaded(AppEvent)` — chat load (`message_count`, `token_estimate`)
 - **class** `AppApprovalRequired(AppEvent)` — approval request payload
 - **class** `AppCommandStarted/Progress/Completed(AppEvent)` — command lifecycle
-- **class** `AppDoctorFinding/ReportReady(AppEvent)` — doctor results
+- **class** `AppDoctorFinding/ReportReady(AppEvent)` — doctor results; report carries `summary_counts`, `recommendations`, and `action_records`
+- **class** `AppChatHistoryCompacted(AppEvent)` — compaction result
+- **class** `AppDoctorNarrationReady/AppDoctorApprovalRequested/AppDoctorActionsApplied(AppEvent)` — interactive doctor cleanup flow
 - **class** `AppRaw(AppEvent)` — fallback for unmapped harness events
 **Notes:**
 - All Pydantic; `event_name` discriminator for routing in `EventConsumer`
@@ -397,7 +416,7 @@ Module marker only.
 **Imports:** `app.events.*`
 **Defines:**
 - **func** `to_app_event(ev: HarnessEvent) -> AppEvent` — isinstance-dispatch mapping; preserves `ts`/`workspace_id`/`chat_id`/`run_id`
-**Internal calls:** instantiates every `App*` class in `app.events`
+**Internal calls:** instantiates every `App*` class in `app.events`, including doctor `action_records`
 **Notes:**
 - Single boundary converting harness → app events; called inside `AppSession.run_user_turn`
 
@@ -406,13 +425,16 @@ Module marker only.
 - `app.agents.prompt_packages.PromptPackageRegistry`
 - `app.agents.router.AgentModeRouter`
 - `app.event_mapping.to_app_event`
+- `app.events.*`, `harness.events.{DoctorNarrationReady, DoctorActionsApplied}`, `harness.status.HarnessStatusSnapshot`
 **Defines:**
 - **class** `AppSession` — Layer 4 async-only facade over `Orchestrator`
   - `__init__(orchestrator, mode_router, prompt_registry, telemetry, app_root)`
-  - `run_user_turn(state, workspace_dir, chat_id, user_text)` — async iter `AppEvent`; routes mode → loads prompt → `orchestrator.run_turn` → maps events
+  - `run_user_turn(state, workspace_dir, chat_id, user_text)` — async iter `AppEvent`; routes mode → loads prompt → `orchestrator.run_agentic_turn` → maps events
   - `resume_approved_step(...)` — after approval modal
   - `resume_with_clarification(...)` — after clarification modal
   - `handle_direct_command(state, command, arguments)` — slash commands
+  - `_stream_doctor_narration_and_approval(...)`, `handle_doctor_approval(..., action_ids=None)` — app-owned doctor narration/confirmation wrapping Layer 3 doctor events
+  - `_collect_tmp_actions(report)`, `_render_doctor_narration(...)`, `_fallback_doctor_narration(...)`
   - `cancel_run(run_id, reason)`
   - `compact_chat_history(chat_id)`
   - `list_commands` / `help` / `list_chats` / `create_chat` / `view_chat` / `resume_chat` / `delete_chat`
@@ -421,7 +443,7 @@ Module marker only.
 - **var** `DataAnalysisAppSession = AppSession` — back-compat alias
 **Internal calls:**
 - `AgentModeRouter.route`, `PromptPackageRegistry.load`, `to_app_event`
-- `Orchestrator.*` (delegates most ops)
+- `Orchestrator.*` (delegates most ops), `Orchestrator.run_agentic_turn`, `Orchestrator.apply_doctor_actions`
 **Notes:**
 - `_active` flag prevents concurrent runs at the session level (orchestrator also enforces)
 
@@ -496,11 +518,13 @@ Marker.
 - `app.tui.run_trace.RunTrace`
 - `app.tui.screens.file_ingest.FileIngestScreen`
 - `app.tui.screens.workspace_manager.WorkspaceManagerScreen`
+- `app.tui.sidebar_sections.ResumeChatRequested, InsertMentionRequested`
 - `app.tui.widgets.ApprovalBanner, ClarificationBar, ConversationPane, SidebarPane, WorkspaceBar`
 **Defines:**
+- **func** `_parse_yes(value) -> bool` — helper for doctor confirmation text
 - **var** `DataAnalysisAppSession = AppSession` (alias)
 - **class** `DataHarnessApp(App[None])` — main Textual app; layout, event dispatch, input
-  - properties: `session`, `state`, `active_chat_id`, `workspace_dir`
+  - properties: `session`, `state`, `_approval_banner`, `active_chat_id`, `workspace_dir`
   - `_emit`, `_emit_error` — telemetry helpers
   - `compose_ids`, `compose`, `on_mount`, `_subscribe_status`
   - `_ensure_chat`, `submit_user_text`
@@ -508,6 +532,8 @@ Marker.
   - `_stream_command(command, arguments)` — calls `session.handle_direct_command`
   - `_build_consumer() -> EventConsumer`
   - `_handle_*` — turn_started/runtime_delta/final_message/turn_failed/turn_cancelled/command_*/doctor_*/status_changed
+  - `_handle_doctor_report_ready`, `_handle_doctor_narration_ready`, `_handle_doctor_approval_requested`, `_handle_doctor_actions_applied`
+  - `_on_doctor_accept_all`, `_on_doctor_apply_selected`, `_on_doctor_reject_all` — schedule doctor action application through Textual workers
   - `_refresh_trace_widgets`
   - `apply_workspace_snapshot(snapshot)`
   - `_args_to_dict(spec, positional)`
@@ -519,12 +545,13 @@ Marker.
   - `action_copy_text`, `action_paste_text`, `_copyable_text` — copy selected/focused conversation text via native clipboard + Textual fallback; paste native/Textual clipboard into prompt
   - `_insert_mention_into_editor(path)` — inserts formatted `@file` mention and restores editor focus
   - `handle_approval_decision(plan, step_contract, decision)` → `_stream_resume_approved`
+  - `_stream_doctor_approval(report_id, decision, action_ids=None)` → `session.handle_doctor_approval`
   - `handle_clarification_response(text)` → `_stream_clarification`
 **Internal calls:** `AppSession`, all imports above
 **Notes:**
 - `_subscribe_status` runs as background worker (Textual) — subscribes to orchestrator status broker
 - `_trace: RunTrace` ring-buffers phase lines for `WorkspaceBar` + `SidebarPane`
-- Modals pushed/popped via Textual screen stack
+- Approval/clarification/doctor action review are inline banner flows, not full-screen modals
 
 ### `src/app/tui/clipboard.py`
 **Defines:**
@@ -623,7 +650,7 @@ Marker.
 **Defines:**
 - **class** `WorkspaceBar(Static)` — header strip; `update_from(...)`
 - **class** `ConversationPane(VerticalScroll)` — transcript + streaming buffer
-  - `append_user/append_assistant/append_assistant_delta/finalize_assistant/discard_streaming/text_buffer/rehydrate_from_record/_refresh_text`
+  - `append_user/append_assistant/append_assistant_delta/finalize_assistant/discard_streaming/text_buffer/rehydrate_from_record/_refresh_text`; `append_assistant_delta` appends text deltas only and drops reasoning/tool-call deltas from the transcript
 - **class** `SidebarPane(VerticalScroll)` — composes per-section widgets (Workspace/Chats/Files/Trace/Commands/Doctor/Failures); routes update calls to children + `SidebarState`; aggregates `text_buffer` from `SidebarState`
   - `compose`, `update_status`, `update_files(files)`, `update_chats(chats)` (accepts `list[str]` or `list[ChatSummary]`), `command_started/progress/completed`, `append_doctor_finding`, `doctor_report`, `failure`, `update_trace`, `text_buffer`, `_brief_result`
 - **class** `PlanPane(Static)` — `render_plan(plan)`
@@ -634,7 +661,7 @@ Marker.
 - **class** `FailurePane(Static)` — `render_failure(failure)`
 - **class** `ProvenancePane(Static)` — `render_lineage(refs)`
 - **class** `StatusPane(Static)` — `append_events(events)`
-- **class** `ApprovalBanner(Vertical)` — inline approval banner; `show(plan, step_contract)`/`hide()`; keys `a`/`r`/`v` and buttons emit `ApprovalBanner.ApprovalDecisionMade(plan, step_contract, decision)`; replaces the removed `ApprovalScreen`
+- **class** `ApprovalBanner(Vertical)` — inline approval banner; `show(plan, step_contract)`/`hide()`; keys `a`/`r`/`v` and buttons emit `ApprovalBanner.ApprovalDecisionMade(plan, step_contract, decision)`; also renders doctor action review via `show_doctor_review(report_id, actions, findings)` and `get_doctor_decisions()` inside a dedicated doctor container; normal approval keybindings are ignored in doctor mode; replaces the removed `ApprovalScreen`
 - **class** `ClarificationBar(Vertical)` — inline clarification bar; `show(question)`/`hide()`; Input + Submit/Dismiss buttons; emits `ClarificationBar.ClarificationSubmitted(text)` on Enter or Submit; `ClarificationBar.ClarificationDismissed` on escape or Dismiss; replaces the removed `ClarificationScreen`
 **Notes:** active widgets: `ConversationPane`, `SidebarPane`, `WorkspaceBar`. Other panes available for alternate layouts.
 
@@ -784,6 +811,7 @@ Re-exports `AppStore`, `AppPaths`, `WorkspacePaths`, `ActiveWorkspace`, `Workspa
 - **class** `HarnessCommandRegistry`
   - `register(descriptor, handler, *, availability)`
   - `list_descriptors(ctx)`, `help(command)`, `validate(command, args)`, `get_handler(command)`
+  - `list_runtime_callable()` — prompt-safe tool-call descriptors, including `recall_knowledge`
 - **func** `parse_slash(text) -> tuple[str, list[str]]` — positional-only per spec §8
 
 ### `src/harness/commands.py`
@@ -835,6 +863,9 @@ Re-exports `HarnessCommandRegistry`.
 - **class** `TmpCleanupBlocked(RuntimeError)`
 - **class** `Doctor`
   - `check_source_file(path, *, stored_size, stored_mtime_ns, stored_fingerprint)`
+  - `check_all_sources(workspace_dir, persistence, workspace_id)` — async source rescan with drift/missing findings
+  - `inventory_tmp_artifacts(workspace_dir, persistence)` — async tmp inventory with keep/cleanup classifications
+  - `prune_pending_plans(workspace_dir)` — async pending plan tombstone/stuck-plan scan
   - `review_tmp_items(items, *, trigger_context, live_refs, promote_map)`
   - `run(workspace_dir, *, trigger_context, tmp_items, persistence, workspace_id, live_refs, promote_map)`
   - `apply_tmp_action(action_record, *, workspace_dir)` — unlink/rename + mark applied
@@ -842,14 +873,16 @@ Re-exports `HarnessCommandRegistry`.
 **Notes:** spec §6.12 — cleanup follows persisted `TmpAction`
 
 ### `src/harness/doctor_runner.py`
-**Imports:** `harness.doctor.Doctor`; `harness.events.{CommandStarted, CommandProgress, CommandCompleted, DoctorActionProposed, DoctorFinding, DoctorReportReady, DoctorStarted, HarnessEvent}`
+**Imports:** `harness.doctor.Doctor`; `harness.events.{CommandStarted, CommandProgress, CommandCompleted, DoctorActionProposed, DoctorFinding, DoctorReportReady, DoctorStarted, HarnessEvent}`; `harness.knowledge.KnowledgeManager`; `runtime.types.{RuntimeMessage, RuntimeRequest}`
 **Defines:**
 - **var** `PHASES` — scan_sources/review_validity/review_lineage/review_tmp/review_memory/assemble_recommendations
 - **class** `DoctorRunner`
-  - `run(*, workspace_id, workspace_dir, trigger, chat_id, run_id) -> AsyncIterator[HarnessEvent]`
+  - `__init__(doctor, persistence, runtime, knowledge_manager, chat_store)`
+  - `run(*, workspace_id, workspace_dir, trigger, chat_id, run_id, mode="full") -> AsyncIterator[HarnessEvent]` — deterministic phases for `light/full`; LLM semantic phases for `semantic/full`
   - `_run_phase(...)` — `review_tmp` discovers tmp files and emits promotion/keep actions; others stub
   - `_classify_tmp_items(items)` — successful `step.py` → function promotion; failed step evidence → keep
   - `_read_step_result(path)`, `_event_action(action)`, `_category(phase)`
+  - `_run_chat_knowledge_mining(...)`, `_run_script_assessment(...)`, `_run_consistency_check(...)` — runtime-backed semantic doctor phases
 
 ### `src/harness/events.py`
 **Imports:** `harness.status.HarnessStatusSnapshot`; `runtime.types.RuntimeStatus`; `worker.models.StepExecutionEnvelope, StepTaskStatus`
@@ -863,10 +896,10 @@ Re-exports `HarnessCommandRegistry`.
 **Defines:** `HarnessError(Exception)` ← `ChatNotFound`, `ChatWorkspaceMismatch`, `ChatActiveDeletionBlocked`, `WorkspaceNotFound`, `RunAlreadyActive`, `WorkspaceSwitchBlocked`
 
 ### `src/harness/factory.py`
-**Imports:** `harness.{context,db,doctor,orchestrator,persistence}`
+**Imports:** `harness.{context,db,doctor,knowledge,orchestrator,persistence}`; `observability.Telemetry`; `runtime.protocol.Runtime`; `worker.executor.PythonStepExecutor`
 **Defines:**
 - **func** `build_orchestrator(*, workspace_dir, runtime, telemetry) -> Orchestrator` — sole wiring point per spec §8.1
-**Notes:** Layer 4 must call this — never construct `Orchestrator` directly
+**Notes:** Layer 4 must call this — never construct `Orchestrator` directly. Factory wires `KnowledgeManager` with the workspace dir/persistence so memory writes stay inside Layer 3.
 
 ### `src/harness/fingerprints.py`
 **Defines:**
@@ -876,7 +909,7 @@ Re-exports `HarnessCommandRegistry`.
 **Notes:** actions: `fingerprinted`, `reused_fingerprint`, `changed`, `missing`
 
 ### `src/harness/knowledge.py`
-**Imports:** `harness.control.MemoryUpdateProposal`; `harness.persistence.HarnessPersistence`
+**Imports:** `harness.control.{MemoryUpdateProposal, utc_now}`; `harness.persistence.HarnessPersistence`
 **Defines:**
 - **class** `MemoryWriteForbidden(PermissionError)`
 - **func** `guarded_external_memory_write(workspace_dir, relative_path, content)` — always raises (boundary enforcement)
@@ -885,6 +918,9 @@ Re-exports `HarnessCommandRegistry`.
   - `synthesize_from_user_teaching`, `check_function_freshness`
   - `propose_update(*, run_id, memory_target, source_refs, proposed_content) -> MemoryUpdateProposal`
   - `apply(proposal_id, *, decision)`
+  - `write_note/delete_note`, `write_gap/delete_gap`, `write_function/delete_function`
+  - `set_preference/remove_preference`
+  - `has_note_for_turns(workspace_dir, turn_ids)` — echo-dedup helper for doctor knowledge mining
   - `_detect_conflicts`, `_resolve_memory_target`, `_slug`
 **Notes:** spec §6.13 + §10.8; reuse blocked unless source validity is `ok`/`revalidated`
 
@@ -897,10 +933,11 @@ Re-exports `HarnessCommandRegistry`.
 - **func** `_workspace_schema_snapshot(workspace_dir)` — compact JSON-lines schema context for plan repair prompts
 - **func** `_build_plan_analysis_repair_prompt(...)` — strict retry prompt for malformed `plan_analysis` tool calls
 - **func** `_plan_analysis_no_code_message(validation_error)` — final no-code-ran user message after repeated invalid plans
+- **func** `_apply_safe_action(km, workspace_dir, action)` — auto-apply safe doctor cleanup/promotion actions
 - **func** `_read_workspace_file(...)` — raw Layer-3 workspace text read with boundary and size caps
 - **class** `Orchestrator`
   - `_register_commands` (built-ins: doctor, compact, help, cancel_run, memory_review, inspect_artifact, provenance_inspect, validity_inspect, mark_result_trusted, mark_result_invalidated, challenge_conclusion, stop_after_current_step, revise_goal, retry_step, rerun_step, chat ops, workspace ops). All Layer 3 commands now available; no stubs remain.
-  - `_handle_doctor`, `_handle_compact`, `_handle_help`, `_handle_cancel_run`, `_handle_memory_review`, `_handle_inspect_artifact`, `_handle_provenance_inspect`, `_handle_validity_inspect`, `_handle_mark_result_trusted`, `_handle_mark_result_invalidated`, `_handle_challenge_conclusion`, `_handle_stop_after_current_step`, `_handle_revise_goal`, `_handle_retry_step`, `_handle_rerun_step`, `_handle_unavailable` (fallback)
+  - `_handle_doctor`, `_handle_compact`, `_handle_help`, `_handle_cancel_run`, `_handle_memory_review`, `_handle_recall_knowledge`, `_handle_inspect_artifact`, `_handle_provenance_inspect`, `_handle_validity_inspect`, `_handle_mark_result_trusted`, `_handle_mark_result_invalidated`, `_handle_challenge_conclusion`, `_handle_stop_after_current_step`, `_handle_revise_goal`, `_handle_retry_step`, `_handle_rerun_step`, `_handle_unavailable` (fallback)
   - `_mark_step_validity(...)` (verifies step_records membership before write), `_request_step_action(...)` — shared helpers for trusted/invalidated and retry/rerun
   - `_handle_revise_goal` appends `run_state_history` audit record with previous/new goal
   - `_stop_after_step_run_ids: set[str]` — run ids flagged for graceful stop after current step
@@ -909,16 +946,18 @@ Re-exports `HarnessCommandRegistry`.
   - `_make_chat_handler(name)` / `_make_workspace_handler(name)` — factories
   - `list_commands(context)`, `help(command)`
   - `handle_direct_command(state, *, command, arguments)`
-  - **workspace ops:** `list_workspaces`, `create_workspace`, `rename_workspace`, `delete_workspace`, `activate_workspace(force)`, `ingest_files`
+  - **workspace ops:** `list_workspaces`, `create_workspace`, `rename_workspace`, `delete_workspace`, `activate_workspace(force)`, `ingest_files`; activation runs a light doctor pass
   - **run lock:** `_acquire_run(run_id)` raises `RunAlreadyActive`; `_release_run`
   - **chat ops:** `create_chat`, `list_chats`, `view_chat`, `delete_chat`, `resume_chat`, `compact_chat_history`
   - **turn:** `run_turn(state, *, workspace_dir, chat_id, user_input, requested_mode, prompt_text, durable_context="") -> AsyncIterator[HarnessEvent]` — single-stream; emits `TurnPaused`/`TurnFailed(empty_output)` instead of hollow asg_ rows
   - **agentic turn:** `run_agentic_turn(state, *, workspace_dir, chat_id, user_input, requested_mode, prompt_provider, max_iterations=4) -> AsyncIterator[HarnessEvent]` — bounded multi-iteration loop: build durable context → run_turn → dispatch tool_calls → handle handoffs/empty-output/malformed-tool/plan-repair retry → ApprovalRequired termination. Layer-3 owned per spec §6.3 / §8.1.
   - **tool dispatch:** `_dispatch_tool_call(state, name, args) -> AsyncIterator[HarnessEvent]` — routes knowledge intents via `knowledge_intents.handle_knowledge_intent`, others via `registry.get_handler(name)`; re-yields handler events
-  - **context block:** `_build_durable_context_block(workspace_id, workspace_dir) -> str`
+  - **context block:** `_build_durable_context_block(workspace_id, workspace_dir, user_query="") -> str` — adds query-relevant memory notes
   - `close`, `cancel_run(run_id, reason) -> TurnCancelled`
   - **status:** `status_snapshot(workspace_id)`, `watch_status() -> AsyncIterator`
-  - **execution resumption:** `resume_approved_step(...)`, `resume_with_clarification(...)`
+  - **doctor actions:** `apply_doctor_actions(report_id, decision, workspace_id, workspace_dir, chat_id, action_ids=None)` — optional selected action ids apply only checked doctor actions; explicit empty list applies none
+  - **execution resumption:** `resume_approved_step(...)`, `resume_with_clarification(...)`; successful worker completion starts a semantic doctor background pass
+  - **artifact promotion:** `_promote_step_artifacts(workspace_dir, step_result_path, run_id) -> list[Path]` — copies successful step outputs from tmp/ to artifacts/ and memory/functions/
   - `prepare_worker_dispatch(plan, *, approval) -> dict` — validates code-exec approval
   - `_build_plan_from_arguments(state, *, goal, steps) -> tuple[Plan, list[StepContract]]` — validates `plan_analysis` args and imports against worker policy; LLM owns code text
   - `_handle_plan_analysis(ctx, args)` / `_handle_request_execution(ctx, args)` — registered runtime-callable commands; emit PlanReady + ApprovalRequired
@@ -927,6 +966,7 @@ Re-exports `HarnessCommandRegistry`.
 - Single-active-run via `_acquire_run`/`_release_run`
 - `RuntimeRequestBuilder` handles token-pressure auto-compaction inside `run_turn`
 - Yields `TurnStarted`, `ModeActivated`, `ChatHistoryLoaded`, `PromptBuilt`, `RuntimeDelta`s, `FinalMessage`
+- Runtime-callable command catalog now includes `recall_knowledge` for workspace memory search
 
 ### `src/harness/paths.py`
 **Defines:**
@@ -982,9 +1022,9 @@ Re-exports `HarnessCommandRegistry`.
 **Imports:** `runtime.types.RuntimeStatus`
 **Defines:**
 - **class** `HarnessEventRefPayload(BaseModel)`
-- **class** `HarnessStatusSnapshot(BaseModel)` — workspace/chat/run + health/mode/tasks/approvals
+- **class** `HarnessStatusSnapshot(BaseModel)` — workspace/chat/run + health/mode/tasks/approvals; includes `doctor_findings`
 - **class** `StatusBroker`
-  - `publish(snapshot)`, `close`, `watch() -> AsyncIterator[HarnessStatusSnapshot]`
+  - `publish(snapshot)`, `append_doctor_finding(finding)`, `close`, `watch() -> AsyncIterator[HarnessStatusSnapshot]`
 **Notes:** heartbeat 2.0s default; coalesce 0.05s default
 
 ### `src/harness/validity.py`
@@ -1037,15 +1077,15 @@ Re-exports `RuntimeConfig`, `auto_ctx_from_ram_gb` from `runtime.config`.
 - **vars** `TOOL_START`, `TOOL_END`, `THINK_START`, `THINK_END`, `STREAM_MARKERS`, `EOS_TOKENS`
 - **func** `strip_eos(text)`, `strip_full_eos(text)`, `eos_prefix_suffix(text)`, `build_llama_kwargs(config)`, `marker_prefix_suffix(text)`
 - **class** `_SeqGen` — `next()` increment counter
-- **func** `split_gemma_think_text(text, request_id, seq)` — parse reasoning blocks
+- **func** `split_gemma_think_text(text, request_id, seq, enable_reasoning_stream=True)` — parse reasoning blocks and drop reasoning text when disabled
 - **func** `event_from_tool_call_text(text, request_id, seq)` — text → `RuntimeEvent` (try parse, fallback to repair)
-- **func** `emit_content_events(content, stream_buffer, request_id, seq)` — typed event extraction with partial-marker buffering
+- **func** `emit_content_events(content, stream_buffer, request_id, seq, enable_reasoning_stream=True)` — typed event extraction with partial-marker buffering; loops through multiple tool calls in one chunk/tail
 - **class** `LlamaCppRuntime` (implements `runtime.protocol.Runtime`)
   - `__init__(config, telemetry=None)` — load model
   - `_set_status`, `status`, `chat_format` (property, exposes `_config.chat_format`), `context_window`
   - `_count_tokens(request)` — tokenize w/ heuristic fallback
   - `token_pressure(request)`, `validate_request(request)`
-  - `_completion_kwargs(request)`, `_sync_event_iterator(request)` — yields RuntimeEvents
+  - `_completion_kwargs(request)`, `_sync_event_iterator(request)` — yields RuntimeEvents; keeps parse-error diagnostics local to each stream
   - `stream(request) -> AsyncIterator[RuntimeEvent]` — wraps sync iter via `SyncToAsyncBridge`
 **Notes:** state machine loading→ready→streaming→ready (lock-protected)
 
@@ -1202,16 +1242,16 @@ Re-exports `PythonStepExecutor` (executor); `ExecutionEnvelope`, `ExecutionStatu
 ### Hot path summary
 1. Keystroke → `PromptBar.on_input_submitted` → `DataHarnessApp._stream_turn`
 2. `AppSession.run_user_turn` → `AgentModeRouter.route` → `PromptPackageRegistry.load`
-3. `Orchestrator.run_turn` → `RuntimeRequestBuilder.build_messages` → `LlamaCppRuntime.stream`
+3. `Orchestrator.run_agentic_turn` → `Orchestrator.run_turn` → `RuntimeRequestBuilder.build_messages` → `LlamaCppRuntime.stream`
 4. `RuntimeEvent`s flow back through `SyncToAsyncBridge` → wrapped as `HarnessEvent`s → `to_app_event` → `AppEvent`
 5. `EventConsumer.dispatch` → `DataHarnessApp._handle_*` → widget updates
 
 ### Compact + Doctor (interactive cleanup flow)
 - New events (harness): `DoctorNarrationReady`, `DoctorApprovalRequested`, `DoctorActionsApplied` (`src/harness/events.py`).
 - New events (app): `AppChatHistoryCompacted`, `AppDoctorNarrationReady`, `AppDoctorApprovalRequested`, `AppDoctorActionsApplied` (`src/app/events.py`); all mapped in `src/app/event_mapping.py`.
-- `Orchestrator.apply_doctor_actions(report_id, decision, workspace_id, workspace_dir, chat_id)` reads `tmp_actions` rows, calls `Doctor.apply_tmp_action`, yields `DoctorActionsApplied`.
-- `DoctorRunner.__init__(doctor, persistence)` now persists `DoctorReport` + `TmpAction` rows during `run` (was previously sidebar-only).
+- `Orchestrator.apply_doctor_actions(report_id, decision, workspace_id, workspace_dir, chat_id, action_ids=None)` reads `tmp_actions` rows, calls `Doctor.apply_tmp_action`, yields `DoctorActionsApplied`; selected `action_ids` limit application to checked doctor actions.
+- `DoctorRunner.__init__(doctor, persistence, runtime, knowledge_manager, chat_store)` now persists `DoctorReport` + `TmpAction` rows during `run` (was previously sidebar-only), and full/semantic modes can mine chat memory or assess saved scripts through the runtime.
 - `Orchestrator.compact_chat_history` now populates `replaced_turn_count` and `summary_token_estimate` on completed `ChatHistoryCompacted`.
 - `AppSession.handle_direct_command` post-processes `doctor` to call `_stream_doctor_narration_and_approval` (renders LLM narration via prompt `src/app/agents/prompts/doctor_narrator.md`).
-- `AppSession.handle_doctor_approval(state, workspace_dir, report_id, decision)` calls `Orchestrator.apply_doctor_actions`.
-- TUI: `ConversationPane.append_compaction`, `append_doctor_line`, `append_doctor_block` (`src/app/tui/widgets.py`); blocks `CompactionSummaryBlock`, `DoctorMessageBlock` (`src/app/tui/conversation.py`). Rehydrate renders `compacted_summary` role as `CompactionSummaryBlock`. New handlers in `DataHarnessApp`: `_handle_chat_history_compacted`, `_handle_doctor_narration_ready`, `_handle_doctor_approval_requested`, `_handle_doctor_actions_applied`. Clarification bar reused for doctor batch confirm via `_pending_doctor_report_id` + `_parse_yes` helper.
+- `AppSession.handle_doctor_approval(state, workspace_dir, report_id, decision, action_ids=None)` calls `Orchestrator.apply_doctor_actions`.
+- TUI: `ConversationPane.append_compaction`, `append_doctor_line`, `append_doctor_block` (`src/app/tui/widgets.py`); blocks `CompactionSummaryBlock`, `DoctorMessageBlock` (`src/app/tui/conversation.py`). Rehydrate renders `compacted_summary` role as `CompactionSummaryBlock`. New handlers in `DataHarnessApp`: `_handle_chat_history_compacted`, `_handle_doctor_narration_ready`, `_handle_doctor_approval_requested`, `_handle_doctor_actions_applied`; doctor action records render in `ApprovalBanner.show_doctor_review`, suppress stale clarification prompts, and dispatch selected ids through `_stream_doctor_approval`.

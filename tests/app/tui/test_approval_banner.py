@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import pytest
 from textual.app import App, ComposeResult
+from textual.widgets import Button, Static
 
 from app.tui.widgets import ApprovalBanner
 
@@ -93,3 +94,57 @@ async def test_show_with_hostile_brackets_does_not_raise():
         banner.show(plan={"id": "p", "goal": "test [brackets]"}, step_contract=hostile_step)
         await pilot.pause()
         assert banner.display is True
+
+
+@pytest.mark.asyncio
+async def test_doctor_review_collects_checkbox_decisions():
+    actions = [
+        {"id": "a1", "action": "cleanup", "target": "artifacts/tmp/a.py", "rationale": "stale"},
+        {"id": "a2", "action": "cleanup", "target": "artifacts/tmp/b.py", "rationale": "orphaned"},
+    ]
+    async with _Host().run_test() as pilot:
+        banner = pilot.app.query_one("#approval_banner", ApprovalBanner)
+        banner.show_doctor_review("report_1", actions, ["finding"])
+        await pilot.pause()
+        checkbox = banner.query_one("#doctor_action_1")
+        checkbox.value = False
+        decisions = banner.get_doctor_decisions()
+        assert decisions == [
+            {"index": 0, "accepted": True, "action": actions[0]},
+            {"index": 1, "accepted": False, "action": actions[1]},
+        ]
+
+
+@pytest.mark.asyncio
+async def test_show_after_doctor_review_restores_normal_approval_ui():
+    actions = [
+        {"id": "a1", "action": "cleanup", "target": "artifacts/tmp/a.py", "rationale": "stale"},
+    ]
+    async with _Host().run_test() as pilot:
+        banner = pilot.app.query_one("#approval_banner", ApprovalBanner)
+        banner.show_doctor_review("report_1", actions, ["finding"])
+        await pilot.pause()
+
+        banner.show(plan=PLAN, step_contract=STEP)
+        await pilot.pause()
+
+        goal = banner.query_one("#approval_goal", Static)
+        approve = banner.query_one("#approve", Button)
+        assert "APPROVE PLAN: count rows" in str(goal.render())
+        assert approve.id == "approve"
+        assert not banner.query("#doctor_action_0")
+
+
+@pytest.mark.asyncio
+async def test_doctor_review_ignores_normal_approval_keybindings():
+    actions = [
+        {"id": "a1", "action": "cleanup", "target": "artifacts/tmp/a.py", "rationale": "stale"},
+    ]
+    async with _Host().run_test() as pilot:
+        banner = pilot.app.query_one("#approval_banner", ApprovalBanner)
+        banner.show(plan=PLAN, step_contract=STEP)
+        banner.show_doctor_review("report_1", actions, ["finding"])
+        await pilot.press("a")
+        await pilot.pause()
+
+        assert pilot.app.captured == []

@@ -67,7 +67,7 @@ def to_app_event(ev: HarnessEvent) -> AppEvent:
     if isinstance(ev, DoctorReportReady):
         return AppDoctorReportReady(
             **base, report_id=ev.report_id, summary_counts=ev.summary_counts,
-            recommendations=ev.recommendations,
+            recommendations=ev.recommendations, action_records=ev.action_records,
         )
     if isinstance(ev, DoctorNarrationReady):
         return AppDoctorNarrationReady(

@@ -34,6 +34,7 @@ class HarnessStatusSnapshot(BaseModel):
     last_compacted_at: datetime | None
     compaction_count: int
     doctor_warning_count: int
+    doctor_findings: list = Field(default_factory=list)
     last_event: HarnessEventRefPayload | None = None
 
 
@@ -77,6 +78,18 @@ class StatusBroker:
         for q in self._subscribers:
             with _ContextlibSuppress():
                 q.put_nowait(snapshot)
+
+    def append_doctor_finding(self, finding):
+        """Push a doctor finding into the current snapshot's doctor section."""
+        async def _push():
+            snapshot = self._latest
+            if snapshot is None:
+                return
+            doctor = snapshot.doctor_findings or []
+            doctor.append(finding.model_dump() if hasattr(finding, 'model_dump') else str(finding))
+            snapshot.doctor_findings = doctor[-8:]
+            self.publish(snapshot)
+        asyncio.create_task(_push())
 
     async def close(self) -> None:
         self._closed = True

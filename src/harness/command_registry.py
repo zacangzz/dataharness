@@ -114,7 +114,7 @@ class HarnessCommandRegistry:
         allowed = {
             "workspace_status", "workspace_inventory", "list_workspaces",
             "list_chats", "list_files", "inspect_file",
-            "plan_analysis", "request_execution",
+            "plan_analysis", "request_execution", "recall_knowledge",
         }
         return sorted(
             (desc for name, (desc, _) in self._handlers.items() if name in allowed),

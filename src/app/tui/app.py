@@ -9,7 +9,7 @@ from textual.app import App, SkipAction
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.widget import Widget
-from textual.widgets import Footer, Header, Input
+from textual.widgets import Button, Footer, Header, Input
 
 from textual import on
 
@@ -102,6 +102,10 @@ class DataHarnessApp(App[None]):
     @property
     def state(self) -> RunStateRecord:
         return self._state
+
+    @property
+    def _approval_banner(self) -> ApprovalBanner:
+        return self.query_one("#approval_banner", ApprovalBanner)
 
     @property
     def active_chat_id(self) -> str | None:
@@ -318,6 +322,8 @@ class DataHarnessApp(App[None]):
             self.notify(str(exc), severity="error")
 
     async def _stream_command(self, command: str, arguments: dict) -> None:
+        if command == "compact" and "chat_id" not in arguments:
+            arguments["chat_id"] = self._active_chat_id
         consumer = self._build_consumer()
         try:
             async for ev in self._session.handle_direct_command(
@@ -455,6 +461,15 @@ class DataHarnessApp(App[None]):
         self.query_one("#sidebar", SidebarPane).doctor_report(
             event.summary_counts, event.recommendations
         )
+        if getattr(event, "action_records", None):
+            try:
+                self.query_one("#clarification_bar", ClarificationBar).hide()
+            except Exception:
+                pass
+            self._pending_doctor_report_id = None
+            self._approval_banner.show_doctor_review(
+                event.report_id, event.action_records, event.recommendations or []
+            )
 
     def _handle_doctor_narration_ready(self, event) -> None:
         try:
@@ -463,6 +478,8 @@ class DataHarnessApp(App[None]):
             pass
 
     def _handle_doctor_approval_requested(self, event) -> None:
+        if getattr(self._approval_banner, "_doctor_mode", False):
+            return
         self._pending_doctor_report_id = event.report_id
         question = event.question or "Apply all proposed actions? (yes / no)"
         self.show_clarification_prompt(question)
@@ -731,7 +748,7 @@ class DataHarnessApp(App[None]):
 
     def _handle_approval_required(self, event) -> None:
         try:
-            banner = self.query_one("#approval_banner", ApprovalBanner)
+            banner = self._approval_banner
         except Exception:
             return
         plan_id = event.plan_id
@@ -755,7 +772,7 @@ class DataHarnessApp(App[None]):
     ) -> None:
         approval = {"decision": decision, "decided_by": "user", "approval_kind": "code_execution"}
         try:
-            self.query_one("#approval_banner", ApprovalBanner).hide()
+            self._approval_banner.hide()
         except Exception:
             pass
         if decision == "revise_requested":
@@ -784,6 +801,46 @@ class DataHarnessApp(App[None]):
         except Exception:
             pass
 
+    @on(Button.Pressed, "#doctor_accept_all")
+    def _on_doctor_accept_all(self, event: Button.Pressed) -> None:
+        event.stop()
+        decisions = self._approval_banner.get_doctor_decisions()
+        accepted_ids = [
+            str(d["action"].get("id"))
+            for d in decisions
+            if d["action"].get("id")
+        ]
+        self.run_worker(self._stream_doctor_approval(
+            self._approval_banner._doctor_report_id,
+            "yes",
+            accepted_ids,
+        ))
+
+    @on(Button.Pressed, "#doctor_apply_selected")
+    def _on_doctor_apply_selected(self, event: Button.Pressed) -> None:
+        event.stop()
+        decisions = self._approval_banner.get_doctor_decisions()
+        accepted_ids = [
+            str(d["action"].get("id"))
+            for d in decisions
+            if d.get("accepted") and d["action"].get("id")
+        ]
+        decision = "yes" if accepted_ids else "no"
+        self.run_worker(self._stream_doctor_approval(
+            self._approval_banner._doctor_report_id,
+            decision,
+            accepted_ids,
+        ))
+
+    @on(Button.Pressed, "#doctor_reject_all")
+    def _on_doctor_reject_all(self, event: Button.Pressed) -> None:
+        event.stop()
+        self.run_worker(self._stream_doctor_approval(
+            self._approval_banner._doctor_report_id,
+            "no",
+            None,
+        ))
+
     @on(ClarificationBar.ClarificationSubmitted)
     def _on_clarification_submitted(
         self, event: ClarificationBar.ClarificationSubmitted
@@ -808,11 +865,21 @@ class DataHarnessApp(App[None]):
             report_id = self._pending_doctor_report_id
             self._pending_doctor_report_id = None
             decision = "yes" if _parse_yes(text) else "no"
-            self.run_worker(self._stream_doctor_approval(report_id, decision))
+            self.run_worker(self._stream_doctor_approval(report_id, decision, None))
             return
         self.run_worker(self._stream_clarification(text))
 
-    async def _stream_doctor_approval(self, report_id: str, decision: str) -> None:
+    async def _stream_doctor_approval(
+        self,
+        report_id: str,
+        decision: str,
+        action_ids: list[str] | None = None,
+    ) -> None:
+        self._approval_banner.hide()
+        try:
+            self.query_one("#clarification_bar", ClarificationBar).hide()
+        except Exception:
+            pass
         consumer = self._build_consumer()
         try:
             async for ev in self._session.handle_doctor_approval(
@@ -820,6 +887,7 @@ class DataHarnessApp(App[None]):
                 workspace_dir=self._workspace_dir,
                 report_id=report_id,
                 decision=decision,
+                action_ids=action_ids,
             ):
                 consumer.dispatch(ev)
         except Exception as exc:

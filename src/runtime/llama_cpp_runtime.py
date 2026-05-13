@@ -91,7 +91,11 @@ class _SeqGen:
 
 
 def split_gemma_think_text(
-    text: str, request_id: str, seq: _SeqGen
+    text: str,
+    request_id: str,
+    seq: _SeqGen,
+    *,
+    enable_reasoning_stream: bool = True,
 ) -> tuple[list[RuntimeEvent], str]:
     events: list[RuntimeEvent] = []
     remaining = text
@@ -102,7 +106,7 @@ def split_gemma_think_text(
             events.append(RuntimeEvent(
                 type="text_delta", request_id=request_id, seq=seq.next(), text=before.strip(),
             ))
-        if reasoning.strip():
+        if reasoning.strip() and enable_reasoning_stream:
             events.append(RuntimeEvent(
                 type="reasoning_delta", request_id=request_id, seq=seq.next(), text=reasoning.strip(),
             ))
@@ -127,43 +131,49 @@ def event_from_tool_call_text(text: str, request_id: str, seq: _SeqGen) -> Runti
 
 
 def emit_content_events(
-    content: str, stream_buffer: str, request_id: str, seq: _SeqGen
+    content: str,
+    stream_buffer: str,
+    request_id: str,
+    seq: _SeqGen,
+    *,
+    enable_reasoning_stream: bool = True,
 ) -> tuple[list[RuntimeEvent], str]:
     events: list[RuntimeEvent] = []
     pending = stream_buffer + content if stream_buffer else content
     pending = strip_full_eos(pending)
     if THINK_START in pending and THINK_END not in pending:
         return events, pending
-    think_events, pending = split_gemma_think_text(pending, request_id, seq)
+    think_events, pending = split_gemma_think_text(
+        pending,
+        request_id,
+        seq,
+        enable_reasoning_stream=enable_reasoning_stream,
+    )
     events.extend(think_events)
-    if TOOL_START not in pending:
-        suffix = marker_prefix_suffix(pending) or eos_prefix_suffix(pending)
-        if suffix:
-            visible = pending[: -len(suffix)]
-            if visible:
-                events.append(RuntimeEvent(
-                    type="text_delta", request_id=request_id, seq=seq.next(), text=visible,
-                ))
-            return events, suffix
-        if pending:
+    while pending:
+        if TOOL_START not in pending:
+            suffix = marker_prefix_suffix(pending) or eos_prefix_suffix(pending)
+            if suffix:
+                visible = pending[: -len(suffix)]
+                if visible:
+                    events.append(RuntimeEvent(
+                        type="text_delta", request_id=request_id, seq=seq.next(), text=visible,
+                    ))
+                return events, suffix
             events.append(RuntimeEvent(
                 type="text_delta", request_id=request_id, seq=seq.next(), text=pending,
             ))
-        return events, ""
-    prefix, _, rest = pending.partition(TOOL_START)
-    if prefix:
-        events.append(RuntimeEvent(
-            type="text_delta", request_id=request_id, seq=seq.next(), text=prefix,
-        ))
-    tool_text = TOOL_START + rest
-    if TOOL_END not in tool_text:
-        return events, tool_text
-    tool_block, _, tail = tool_text.partition(TOOL_END)
-    events.append(event_from_tool_call_text(tool_block + TOOL_END, request_id, seq))
-    if tail:
-        events.append(RuntimeEvent(
-            type="text_delta", request_id=request_id, seq=seq.next(), text=tail,
-        ))
+            return events, ""
+        prefix, _, rest = pending.partition(TOOL_START)
+        if prefix:
+            events.append(RuntimeEvent(
+                type="text_delta", request_id=request_id, seq=seq.next(), text=prefix,
+            ))
+        tool_text = TOOL_START + rest
+        if TOOL_END not in tool_text:
+            return events, tool_text
+        tool_block, _, pending = tool_text.partition(TOOL_END)
+        events.append(event_from_tool_call_text(tool_block + TOOL_END, request_id, seq))
     return events, ""
 
 
@@ -247,10 +257,11 @@ class LlamaCppRuntime:
         seq = _SeqGen()
         rid = request.request_id
         stream_buffer = ""
+        parse_error = ""
         for chunk in self._llama.create_chat_completion(**self._completion_kwargs(request), stream=True):
             choice = chunk["choices"][0]
             delta = choice.get("delta", {})
-            if delta.get("reasoning_content"):
+            if delta.get("reasoning_content") and self._config.enable_reasoning_stream:
                 yield RuntimeEvent(
                     type="reasoning_delta", request_id=rid, seq=seq.next(),
                     text=delta["reasoning_content"],
@@ -259,9 +270,15 @@ class LlamaCppRuntime:
                 content = delta["content"]
                 if content:
                     try:
-                        events, stream_buffer = emit_content_events(content, stream_buffer, rid, seq)
+                        events, stream_buffer = emit_content_events(
+                            content,
+                            stream_buffer,
+                            rid,
+                            seq,
+                            enable_reasoning_stream=self._config.enable_reasoning_stream,
+                        )
                     except ModelBehaviorError as exc:
-                        self._last_parse_error = str(exc)
+                        parse_error = str(exc)
                         yield RuntimeEvent(
                             type="error", request_id=rid, seq=seq.next(),
                             error_code="parse_error",
@@ -280,9 +297,15 @@ class LlamaCppRuntime:
                     stream_buffer = ""
                     if flush_buffer:
                         try:
-                            events, stream_buffer = emit_content_events(flush_buffer, "", rid, seq)
+                            events, stream_buffer = emit_content_events(
+                                flush_buffer,
+                                "",
+                                rid,
+                                seq,
+                                enable_reasoning_stream=self._config.enable_reasoning_stream,
+                            )
                         except ModelBehaviorError as exc:
-                            self._last_parse_error = str(exc)
+                            parse_error = str(exc)
                             yield RuntimeEvent(
                                 type="error", request_id=rid, seq=seq.next(),
                                 error_code="parse_error",
@@ -300,7 +323,7 @@ class LlamaCppRuntime:
                 if finish_reason == "unknown" or finish_reason is None:
                     if seq.value == 0:
                         finish_reason = "empty_stream"
-                    elif self._last_parse_error:
+                    elif parse_error:
                         finish_reason = "parse_error"
                     else:
                         finish_reason = "truncated"
@@ -308,7 +331,7 @@ class LlamaCppRuntime:
                 if finish_reason == "empty_stream":
                     diagnostics = {"empty_stream": True}
                 elif finish_reason == "parse_error":
-                    diagnostics = {"parse_error_snippet": self._last_parse_error[:200]}
+                    diagnostics = {"parse_error_snippet": parse_error[:200]}
                 elif finish_reason == "truncated":
                     diagnostics = {"total_deltas": seq.value}
                 yield RuntimeEvent(

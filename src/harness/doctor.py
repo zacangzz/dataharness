@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -58,6 +60,104 @@ class Doctor:
             "modified_time_ns": result.modified_time_ns,
             "fingerprint": result.fingerprint,
         }
+
+    async def check_all_sources(self, workspace_dir: str, persistence, workspace_id: str) -> list[dict[str, Any]]:
+        findings: list[dict[str, Any]] = []
+        data_dir = Path(workspace_dir) / "data"
+        if not data_dir.exists():
+            return findings
+        for src_file in data_dir.iterdir():
+            if src_file.is_dir() or src_file.name.startswith('.'):
+                continue
+            stored = None
+            if persistence is not None:
+                try:
+                    stored = persistence.db.load_record(
+                        "source_records", "path",
+                        str(src_file.relative_to(workspace_dir)),
+                    )
+                except (KeyError, Exception):
+                    pass
+            result = lazy_fingerprint(
+                src_file,
+                stored_size=stored.get("size") if stored else None,
+                stored_mtime_ns=stored.get("mtime_ns") if stored else None,
+                stored_fingerprint=stored.get("fingerprint") if stored else None,
+            )
+            finding: dict[str, Any] = {
+                "source": str(src_file.relative_to(workspace_dir)),
+                "fingerprint_action": result.action,
+            }
+            if result.action in ("changed", "missing"):
+                finding["validity_state"] = classify(
+                    fingerprint_action=result.action,
+                    stored_fingerprint=stored.get("fingerprint") if stored else None,
+                    new_fingerprint=result.fingerprint,
+                ).value
+                finding["type"] = "drift" if result.action == "changed" else "missing"
+            findings.append(finding)
+        return findings
+
+    async def inventory_tmp_artifacts(self, workspace_dir: str, persistence) -> list[dict[str, Any]]:
+        findings: list[dict[str, Any]] = []
+        tmp_dir = Path(workspace_dir) / "artifacts" / "tmp"
+        if not tmp_dir.exists():
+            return findings
+        now = time.time()
+        active_runs = getattr(self, '_active_run_ids', set())
+        for run_dir in tmp_dir.iterdir():
+            if not run_dir.is_dir():
+                continue
+            run_age_days = (now - run_dir.stat().st_mtime) / 86400
+            is_active = run_dir.name in active_runs
+            for step_dir in run_dir.iterdir():
+                if not step_dir.is_dir():
+                    continue
+                for artifact in step_dir.iterdir():
+                    if artifact.name.startswith('.') or artifact.is_symlink():
+                        continue
+                    relative = str(artifact.relative_to(workspace_dir))
+                    age_days = (now - artifact.stat().st_mtime) / 86400
+                    if is_active:
+                        classification, action, guard = "active_run", "keep", "blocked"
+                    elif age_days > 7:
+                        classification, action, guard = "stale", "cleanup", "safe"
+                    else:
+                        classification, action, guard = "orphaned", "keep", "safe"
+                    findings.append({
+                        "path": relative,
+                        "classification": classification,
+                        "proposed_action": action,
+                        "guard_level": guard,
+                        "age_days": round(age_days, 1),
+                    })
+        return findings
+
+    async def prune_pending_plans(self, workspace_dir: str) -> list[dict[str, Any]]:
+        findings: list[dict[str, Any]] = []
+        path = Path(workspace_dir) / "state" / "pending_plans.jsonl"
+        if not path.exists():
+            return findings
+        now = time.time()
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                entry = json.loads(line.strip())
+                age_days = (now - entry.get("ts", 0)) / 86400
+                if entry.get("action") == "resolved" and age_days > 7:
+                    findings.append({
+                        "type": "pending_plan_tombstone",
+                        "plan_id": entry["plan_id"],
+                        "age_days": round(age_days, 1),
+                    })
+                elif entry.get("action") == "created" and age_days > 1:
+                    findings.append({
+                        "type": "pending_plan_stuck",
+                        "plan_id": entry["plan_id"],
+                        "goal": entry.get("goal", "unknown"),
+                        "age_days": round(age_days, 1),
+                        "severity": "warn",
+                    })
+        return findings
 
     def review_tmp_items(
         self,

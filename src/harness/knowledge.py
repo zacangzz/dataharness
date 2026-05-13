@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import re
 
-from harness.control import MemoryUpdateProposal
+from harness.control import MemoryUpdateProposal, utc_now
 from harness.persistence import HarnessPersistence
 
 
@@ -170,3 +170,77 @@ class KnowledgeManager:
     def _slug(self, value: str) -> str:
         slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
         return slug or "memory-update"
+
+    def write_note(self, workspace_dir, name, content, *, source_turn_ids=None, overwrite=False):
+        """Write a knowledge note to memory/notes/<name>.md. Records metadata for echo dedup."""
+        notes_dir = Path(workspace_dir) / "memory" / "notes"
+        notes_dir.mkdir(parents=True, exist_ok=True)
+        note_path = notes_dir / f"{name}.md"
+        if note_path.exists() and not overwrite:
+            return False
+        note_path.write_text(content)
+        meta_path = notes_dir / f"{name}.json"
+        meta = {"source_turn_ids": source_turn_ids or [], "created_at": utc_now().isoformat()}
+        meta_path.write_text(json.dumps(meta))
+        return True
+
+    def delete_note(self, workspace_dir, name):
+        notes_dir = Path(workspace_dir) / "memory" / "notes"
+        note_path = notes_dir / f"{name}.md"
+        meta_path = notes_dir / f"{name}.json"
+        deleted = False
+        for p in (note_path, meta_path):
+            if p.exists():
+                p.unlink()
+                deleted = True
+        return deleted
+
+    def write_gap(self, workspace_dir, name, content):
+        gaps_dir = Path(workspace_dir) / "memory" / "notes" / "gaps"
+        gaps_dir.mkdir(parents=True, exist_ok=True)
+        (gaps_dir / f"{name}.md").write_text(content)
+
+    def delete_gap(self, workspace_dir, name):
+        p = Path(workspace_dir) / "memory" / "notes" / "gaps" / f"{name}.md"
+        if p.exists():
+            p.unlink()
+            return True
+        return False
+
+    def write_function(self, workspace_dir, name, code):
+        funcs_dir = Path(workspace_dir) / "memory" / "functions"
+        funcs_dir.mkdir(parents=True, exist_ok=True)
+        (funcs_dir / f"{name}.py").write_text(code)
+
+    def delete_function(self, workspace_dir, name):
+        p = Path(workspace_dir) / "memory" / "functions" / f"{name}.py"
+        if p.exists():
+            p.unlink()
+            return True
+        return False
+
+    def set_preference(self, workspace_dir, key, value):
+        prefs_path = Path(workspace_dir) / "memory" / "preferences.json"
+        prefs = json.loads(prefs_path.read_text() or "{}")
+        prefs[key] = value
+        prefs_path.write_text(json.dumps(prefs, indent=2))
+
+    def remove_preference(self, workspace_dir, key):
+        prefs_path = Path(workspace_dir) / "memory" / "preferences.json"
+        prefs = json.loads(prefs_path.read_text() or "{}")
+        if key in prefs:
+            del prefs[key]
+            prefs_path.write_text(json.dumps(prefs, indent=2))
+            return True
+        return False
+
+    def has_note_for_turns(self, workspace_dir, turn_ids):
+        """Echo dedup: check if any existing notes already cover these turn IDs."""
+        notes_dir = Path(workspace_dir) / "memory" / "notes"
+        if not notes_dir.exists():
+            return False
+        seen_ids = set()
+        for meta_file in notes_dir.glob("*.json"):
+            meta = json.loads(meta_file.read_text())
+            seen_ids.update(meta.get("source_turn_ids", []))
+        return bool(set(turn_ids) & seen_ids)

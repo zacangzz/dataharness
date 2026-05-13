@@ -21,7 +21,7 @@ from app.tui.sidebar_sections import (
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.message import Message
-from textual.widgets import Button, Input, Static
+from textual.widgets import Button, Checkbox, Input, Static
 
 
 class WorkspaceBar(Static):
@@ -93,6 +93,8 @@ class ConversationPane(VerticalScroll):
         self._safe_scroll_end()
 
     def append_assistant_delta(self, event) -> None:
+        if getattr(event, "delta_type", "text") != "text":
+            return
         if self._streaming_block is None:
             self._streaming_block = AssistantMessageBlock("")
             self._blocks.append(self._streaming_block)
@@ -464,6 +466,9 @@ class ApprovalBanner(Vertical):
         super().__init__(**kwargs)
         self._plan: dict = {}
         self._step_contract: dict = {}
+        self._doctor_mode = False
+        self._doctor_report_id: str = ""
+        self._doctor_actions: list[dict] = []
         self.display = False
 
     def compose(self) -> ComposeResult:
@@ -476,8 +481,14 @@ class ApprovalBanner(Vertical):
             Button("Revise (v)", id="revise"),
             id="approval_buttons",
         )
+        yield Vertical(id="doctor_review")
 
     def show(self, *, plan: dict, step_contract: dict) -> None:
+        self._clear_doctor_review()
+        self._set_normal_approval_visible(True)
+        self._doctor_mode = False
+        self._doctor_report_id = ""
+        self._doctor_actions = []
         self._plan = plan or {}
         self._step_contract = step_contract or {}
         goal = self._plan.get("goal") or self._step_contract.get("purpose") or "(unknown goal)"
@@ -508,8 +519,55 @@ class ApprovalBanner(Vertical):
     def hide(self) -> None:
         self.remove_class("visible")
         self.display = False
+        self._doctor_mode = False
+        self._clear_doctor_review()
+        self._set_normal_approval_visible(True)
+
+    def show_doctor_review(self, report_id, actions, findings):
+        """Render doctor batch approval with checkboxes per action."""
+        self._clear_doctor_review()
+        self._set_normal_approval_visible(False)
+        self.display = True
+        self._doctor_mode = True
+        self._doctor_report_id = report_id
+        self._doctor_actions = actions
+
+        container = self.query_one("#doctor_review", Vertical)
+        container.display = True
+
+        container.mount(Static(
+            f"Doctor Review ({len(findings)} findings, {len(actions)} actions)",
+            id="doctor_header",
+        ))
+
+        for i, action in enumerate(actions):
+            icon = {"cleanup": " ", "promote": " ", "keep": " ", "review": " "}.get(action.get("action", ""), " ")
+            label = f"{icon} {action.get('action')}: {action.get('rationale', action.get('target', ''))[:80]}"
+            cb = Checkbox(label, id=f"doctor_action_{i}", value=True)
+            container.mount(cb)
+
+        container.mount(Horizontal(
+            Button("Accept All", id="doctor_accept_all", variant="success"),
+            Button("Reject All", id="doctor_reject_all", variant="error"),
+            Button("Apply Selected", id="doctor_apply_selected", variant="primary"),
+        ))
+        self.add_class("visible")
+
+    def get_doctor_decisions(self) -> list[dict]:
+        """Collect accept/reject per action from checkboxes."""
+        decisions: list[dict] = []
+        for i in range(len(self._doctor_actions)):
+            cb = self.query_one(f"#doctor_action_{i}", Checkbox)
+            decisions.append({
+                "index": i,
+                "accepted": cb.value,
+                "action": self._doctor_actions[i],
+            })
+        return decisions
 
     def action_decide(self, decision: str) -> None:
+        if self._doctor_mode:
+            return
         self._emit(decision)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -521,7 +579,25 @@ class ApprovalBanner(Vertical):
         self._emit(decision)
 
     def _emit(self, decision: str) -> None:
+        if self._doctor_mode:
+            return
         self.post_message(self.ApprovalDecisionMade(self._plan, self._step_contract, decision))
+
+    def _clear_doctor_review(self) -> None:
+        try:
+            container = self.query_one("#doctor_review", Vertical)
+        except Exception:
+            return
+        for child in list(container.children):
+            child.remove()
+        container.display = False
+
+    def _set_normal_approval_visible(self, visible: bool) -> None:
+        for selector in ("#approval_goal", "#approval_step", "#approval_code", "#approval_buttons"):
+            try:
+                self.query_one(selector).display = visible
+            except Exception:
+                pass
 
 
 class ClarificationBar(Vertical):

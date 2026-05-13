@@ -29,12 +29,14 @@ from harness.doctor_runner import DoctorRunner
 from harness.events import (
     ApprovalRequired, ApprovalResolved, ArtifactsReady, ChatHistoryCompacted,
     ChatHistoryLoaded,
-    CommandCompleted, CommandStarted, DoctorActionsApplied, FinalMessage,
+    CommandCompleted, CommandStarted, DoctorActionProposed, DoctorActionsApplied,
+    DoctorFinding, FinalMessage,
     HarnessEvent, ModeActivated,
     PlanReady, PromptBuilt, RuntimeDelta, RuntimeStatusChanged, StatusChanged,
     ModeHandoffAccepted, StepCompleted, StepTaskStatusChanged, StepTaskSubmitted,
     ToolCallExecuted, TurnCancelled, TurnFailed, TurnPaused, TurnStarted,
 )
+from harness.knowledge import KnowledgeManager
 from harness.knowledge_intents import KNOWLEDGE_INTENTS, handle_knowledge_intent
 from harness.exceptions import ChatNotFound, RunAlreadyActive, WorkspaceSwitchBlocked
 from harness.persistence import HarnessPersistence
@@ -197,6 +199,28 @@ def _plan_analysis_no_code_message(validation_error: str) -> str:
     )
 
 
+def _apply_safe_action(km, workspace_dir, action):
+    """Auto-apply safe doctor actions without user approval."""
+    action_type = action.get("action", "")
+    target = action.get("target", "")
+    if action_type == "cleanup" and target.startswith("artifacts/tmp/"):
+        path = Path(workspace_dir) / target
+        try:
+            if path.exists() and not path.is_symlink():
+                if path.is_file():
+                    path.unlink()
+                elif path.is_dir() and not any(path.iterdir()):
+                    path.rmdir()
+        except Exception:
+            pass
+    elif action_type == "promote" and "memory/" in target:
+        name = Path(target).stem
+        if "notes" in target:
+            km.write_note(workspace_dir, name, "")
+        elif "functions" in target:
+            km.write_function(workspace_dir, name, "")
+
+
 class Orchestrator:
     def __init__(
         self,
@@ -206,6 +230,7 @@ class Orchestrator:
         worker: PythonStepExecutor | None = None,
         persistence: HarnessPersistence | None = None,
         doctor: Doctor | None = None,
+        knowledge_manager: KnowledgeManager | None = None,
         telemetry: Telemetry | None = None,
         config: SessionConfig | None = None,
         app_root: Path | None = None,
@@ -216,6 +241,7 @@ class Orchestrator:
         self.context_manager = context_manager or ContextManager()
         self.worker = worker or PythonStepExecutor()
         self.doctor = doctor or Doctor()
+        self.knowledge_manager = knowledge_manager
         if hasattr(self.worker, "telemetry"):
             self.worker.telemetry = self.telemetry
         self.persistence = persistence
@@ -240,7 +266,11 @@ class Orchestrator:
         self._runtime_lock = asyncio.Lock()
         self.compactor: ChatCompactor | None = None
         self.workspace_manager = AsyncWorkspaceManager(app_root=self.app_root, chat_store=self.chat_store)
-        self.doctor_runner = DoctorRunner(self.doctor, persistence=self.persistence)
+        self.doctor_runner = DoctorRunner(
+            self.doctor, persistence=self.persistence,
+            runtime=self.runtime, knowledge_manager=self.knowledge_manager,
+            chat_store=self.chat_store,
+        )
         self.registry = HarnessCommandRegistry()
         self._register_commands()
 
@@ -383,6 +413,22 @@ class Orchestrator:
                 example_usage="/memory_review pending",
             ),
             self._handle_memory_review,
+        )
+        R.register(
+            HarnessCommandDescriptor(
+                name="recall_knowledge", slash_alias="/recall_knowledge",
+                short_description="Search saved knowledge (notes, preferences, functions) for relevant information",
+                arguments=[ArgSpec(
+                    name="query", type="str", required=True,
+                    description="What to search for",
+                    example="pandas",
+                )],
+                available=True, affected_resource="memory",
+                expected_event_types=["CommandStarted", "CommandCompleted"],
+                example_usage='/recall_knowledge "data cleaning"',
+            ),
+            self._handle_recall_knowledge,
+            availability=lambda ctx: (True, None),
         )
         R.register(
             HarnessCommandDescriptor(
@@ -658,6 +704,51 @@ class Orchestrator:
             command="memory_review",
             result={"proposals": proposals, "count": len(proposals), "status_filter": status_filter},
         )
+
+    async def _handle_recall_knowledge(self, ctx: CommandContext, args: dict[str, Any]) -> AsyncIterator[HarnessEvent]:
+        query = args["query"].lower()
+        yield CommandStarted(
+            ts=datetime.now(UTC), workspace_id=ctx.workspace_id, chat_id=ctx.chat_id, run_id=ctx.run_id,
+            command="recall_knowledge", arguments={"query": query},
+        )
+        workspace_dir = self.workspace_manager.workspaces_dir / (ctx.workspace_id or "")
+        results: list[str] = []
+
+        notes_dir = workspace_dir / "memory" / "notes"
+        if notes_dir.exists():
+            for note_file in sorted(notes_dir.glob("*.md")):
+                content = note_file.read_text()
+                if query in content.lower():
+                    results.append(f"[NOTE {note_file.stem}]: {content[:500]}")
+
+        prefs_path = workspace_dir / "memory" / "preferences.json"
+        if prefs_path.exists():
+            try:
+                prefs = json.loads(prefs_path.read_text())
+                matching = {k: v for k, v in prefs.items() if query in k.lower()}
+                if matching:
+                    results.append(f"[PREFERENCES]: {json.dumps(matching)}")
+            except Exception:
+                pass
+
+        funcs_dir = workspace_dir / "memory" / "functions"
+        if funcs_dir.exists():
+            for func_file in sorted(funcs_dir.glob("*.py")):
+                content = func_file.read_text()
+                if query in content.lower():
+                    results.append(f"[FUNCTION {func_file.stem}]: {content[:500]}")
+
+        if not results:
+            yield CommandCompleted(
+                ts=datetime.now(UTC), workspace_id=ctx.workspace_id, chat_id=ctx.chat_id, run_id=ctx.run_id,
+                command="recall_knowledge", result={"found": False, "text": "No matching knowledge found."},
+            )
+        else:
+            yield CommandCompleted(
+                ts=datetime.now(UTC), workspace_id=ctx.workspace_id, chat_id=ctx.chat_id, run_id=ctx.run_id,
+                command="recall_knowledge",
+                result={"found": True, "text": "\n---\n".join(results), "count": len(results)},
+            )
 
     async def _handle_inspect_artifact(self, ctx: CommandContext, args: dict[str, Any]) -> AsyncIterator[HarnessEvent]:
         rel_path = str(args.get("path", ""))
@@ -1211,6 +1302,23 @@ class Orchestrator:
                 raise WorkspaceSwitchBlocked(active_run_id=self._active_run_id)
             await self.cancel_run(self._active_run_id, reason="workspace_switch")
         await self.workspace_manager.activate_workspace(workspace_id, force=force)
+
+        ws_dir = Path(self.workspace_manager.workspaces_dir) / workspace_id
+        light_runner = DoctorRunner(
+            self.doctor, self.persistence,
+            runtime=None, knowledge_manager=self.knowledge_manager,
+        )
+        async for event in light_runner.run(
+            workspace_id=workspace_id,
+            workspace_dir=ws_dir,
+            trigger="workspace_activation",
+            chat_id=None,
+            run_id=None,
+            mode="light",
+        ):
+            if isinstance(event, DoctorFinding):
+                _log.info("startup_doctor_finding category=%s severity=%s", event.category, event.severity)
+
         return await self.status_snapshot(workspace_id=workspace_id)
 
     async def ingest_files(self, workspace_id: str, paths: list[Path]) -> WorkspaceIngestResult:
@@ -1285,9 +1393,10 @@ class Orchestrator:
 
     async def apply_doctor_actions(
         self, *, report_id: str, decision: str, workspace_id: str, workspace_dir: Path,
-        chat_id: str | None = None,
+        chat_id: str | None = None, action_ids: list[str] | None = None,
     ) -> AsyncIterator[HarnessEvent]:
         normalized = "yes" if str(decision).strip().lower() == "yes" else "no"
+        selected_ids = None if action_ids is None else {str(action_id) for action_id in action_ids}
         rows: list[dict[str, Any]] = []
         if self.persistence is not None:
             try:
@@ -1306,6 +1415,16 @@ class Orchestrator:
         skipped_count = 0
         details: list[dict[str, Any]] = []
         for record in rows:
+            record_id = str(record.get("id") or "")
+            if selected_ids is not None and record_id not in selected_ids:
+                skipped_count += 1
+                details.append({
+                    "id": record.get("id"),
+                    "action": record.get("action"),
+                    "applied": False,
+                    "note": "not_selected",
+                })
+                continue
             if record.get("applied"):
                 skipped_count += 1
                 details.append({"id": record.get("id"), "action": record.get("action"), "applied": True, "note": "already_applied"})
@@ -1355,7 +1474,7 @@ class Orchestrator:
         """
         active_mode = requested_mode
         prompt_text = prompt_provider(active_mode)
-        durable = await self._build_durable_context_block(state.workspace_id, workspace_dir)
+        durable = await self._build_durable_context_block(state.workspace_id, workspace_dir, user_query=user_input)
         _log.info("run_agentic_turn chat_id=%s user_input_chars=%d requested_mode=%s max_iterations=%d",
                    chat_id, len(user_input), requested_mode, max_iterations)
 
@@ -1511,7 +1630,7 @@ class Orchestrator:
         with path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(event, default=str) + "\n")
 
-    async def _build_durable_context_block(self, workspace_id: str, workspace_dir: Path) -> str:
+    async def _build_durable_context_block(self, workspace_id: str, workspace_dir: Path, user_query: str = "") -> str:
         status_text = f"WORKSPACE: {workspace_id}"
         try:
             snapshot = await self.status_snapshot(workspace_id=workspace_id)
@@ -1532,9 +1651,23 @@ class Orchestrator:
         durable_budget = max(int(ctx_window * 0.30), 256)
         if self.context_manager is None or not hasattr(self.context_manager, "build"):
             return status_text
-        return await self.context_manager.build(
+        context = await self.context_manager.build(
             workspace_dir, token_budget=durable_budget, status_text=status_text,
         )
+
+        if user_query:
+            notes_dir = Path(workspace_dir) / "memory" / "notes"
+            if notes_dir.exists():
+                relevant: list[str] = []
+                for note_file in sorted(notes_dir.glob("*.md")):
+                    content = note_file.read_text()
+                    words = [w for w in user_query.lower().split() if len(w) > 3]
+                    if any(word in content.lower() for word in words):
+                        relevant.append(f"[{note_file.stem}]: {content[:300]}")
+                if relevant:
+                    context += "\n\n## Relevant Knowledge\n" + "\n".join(relevant[:3])
+
+        return context
 
     def _has_dispatchable(self, tool_calls: list[dict[str, Any]]) -> bool:
         for tc in tool_calls:
@@ -2030,6 +2163,30 @@ class Orchestrator:
                 text=final_text,
                 usage={},
             )
+
+            async def _post_worker_doctor():
+                semantic_runner = DoctorRunner(
+                    self.doctor, self.persistence,
+                    runtime=self.runtime,
+                    knowledge_manager=self.knowledge_manager,
+                    chat_store=self.chat_store,
+                )
+                async for event in semantic_runner.run(
+                    workspace_id=state.workspace_id,
+                    workspace_dir=str(workspace_dir),
+                    trigger="post_worker_execution",
+                    chat_id=None,
+                    run_id=run_id,
+                    mode="semantic",
+                ):
+                    if isinstance(event, DoctorFinding):
+                        _log.info("post_worker_doctor_finding category=%s severity=%s", event.category, event.severity)
+                    elif isinstance(event, DoctorActionProposed):
+                        if event.action in ("cleanup", "promote") and self.knowledge_manager:
+                            _apply_safe_action(self.knowledge_manager, str(workspace_dir), {"action": event.action, "target": event.target})
+
+            asyncio.create_task(_post_worker_doctor())
+
             _log.info("resume_approved_step end plan_id=%s step_id=%s status=%s",
                        pid, step_id, getattr(envelope.status, "status", "unknown"))
         finally:

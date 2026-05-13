@@ -61,12 +61,31 @@ async def test_stream_yields_text_delta_then_finish(runtime):
     assert out[-1].usage == {"prompt_tokens": 3, "completion_tokens": 2}
 
 
+async def test_reasoning_content_is_suppressed_when_config_disabled(monkeypatch, tmp_path):
+    from runtime import config as cfg_mod, llama_cpp_runtime as rt_mod
+    cfg = cfg_mod.RuntimeConfig(
+        model_path=str(tmp_path / "m.gguf"),
+        chat_format="gemma",
+        enable_reasoning_stream=False,
+    )
+    monkeypatch.setattr(rt_mod, "Llama", lambda **kw: FakeLlama([
+        fake_chunk(reasoning="hidden thought"),
+        fake_chunk(content="visible"),
+        fake_chunk(finish="stop", usage={}),
+    ]))
+    rt = rt_mod.LlamaCppRuntime(cfg)
+    events = []
+    async for ev in rt.stream(make_request("reasoning-off")):
+        events.append(ev)
+    assert [e.type for e in events] == ["text_delta", "finish"]
+    assert events[0].text == "visible"
+
+
 async def test_seq_is_monotonic(runtime):
     seqs = []
     async for ev in runtime.stream(make_request("r2")):
         seqs.append(ev.seq)
-    assert seqs == sorted(seqs)
-    assert seqs[0] == 0
+    assert seqs == list(range(len(seqs)))
 
 
 async def test_request_id_propagated(runtime):

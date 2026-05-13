@@ -62,3 +62,77 @@ async def test_apply_doctor_actions_no_keeps_files(tmp_path: Path) -> None:
     rows = orchestrator.persistence.db.list_records("tmp_actions")
     matching = [r for r in rows if r["doctor_report_id"] == report_id]
     assert matching and all(r["applied"] is False for r in matching)
+
+
+async def test_apply_doctor_actions_selected_ids_only_applies_chosen(tmp_path: Path) -> None:
+    orchestrator, workspace_dir, report_id = await _setup_orchestrator_with_tmp(tmp_path)
+    second_file = workspace_dir / "artifacts" / "tmp" / "run_1" / "step_2" / "other.py"
+    second_file.parent.mkdir(parents=True)
+    second_file.write_text("y = 2\n")
+
+    # Re-run doctor so both tmp files are persisted as tmp_actions for one report.
+    state = RunStateRecord(workspace_id="w_0001", active_agent_mode="interaction")
+    events = [e async for e in orchestrator.handle_direct_command(
+        state, command="doctor", arguments={"trigger": "manual"},
+    )]
+    report_id = next(e.report_id for e in events if e.event_name == "DoctorReportReady")
+    rows = [
+        r for r in orchestrator.persistence.db.list_records("tmp_actions")
+        if r["doctor_report_id"] == report_id
+    ]
+    assert len(rows) >= 2
+    distinct_rows = list({r["item_path"]: r for r in rows}.values())
+    assert len(distinct_rows) >= 2
+    selected = next(r for r in distinct_rows if str(r["item_path"]).endswith("other.py"))
+    selected_id = selected["id"]
+    selected_path = workspace_dir / selected["item_path"]
+    unselected = next(r for r in distinct_rows if str(r["item_path"]).endswith("draft.py"))
+    unselected_path = workspace_dir / unselected["item_path"]
+
+    events = [e async for e in orchestrator.apply_doctor_actions(
+        report_id=report_id,
+        decision="yes",
+        workspace_id="w_0001",
+        workspace_dir=workspace_dir,
+        action_ids=[selected_id],
+    )]
+
+    applied = next(e for e in events if e.event_name == "DoctorActionsApplied")
+    assert applied.applied_count == 1
+    assert applied.skipped_count >= 1
+    assert any(d.get("note") == "not_selected" for d in applied.details)
+    assert not selected_path.exists()
+    assert unselected_path.exists()
+
+
+async def test_apply_doctor_actions_empty_selected_ids_applies_none(tmp_path: Path) -> None:
+    orchestrator, workspace_dir, report_id = await _setup_orchestrator_with_tmp(tmp_path)
+    second_file = workspace_dir / "artifacts" / "tmp" / "run_1" / "step_2" / "other.py"
+    second_file.parent.mkdir(parents=True)
+    second_file.write_text("y = 2\n")
+
+    state = RunStateRecord(workspace_id="w_0001", active_agent_mode="interaction")
+    events = [e async for e in orchestrator.handle_direct_command(
+        state, command="doctor", arguments={"trigger": "manual"},
+    )]
+    report_id = next(e.report_id for e in events if e.event_name == "DoctorReportReady")
+    rows = [
+        r for r in orchestrator.persistence.db.list_records("tmp_actions")
+        if r["doctor_report_id"] == report_id
+    ]
+    assert len({r["item_path"] for r in rows}) >= 2
+
+    events = [e async for e in orchestrator.apply_doctor_actions(
+        report_id=report_id,
+        decision="yes",
+        workspace_id="w_0001",
+        workspace_dir=workspace_dir,
+        action_ids=[],
+    )]
+
+    applied = next(e for e in events if e.event_name == "DoctorActionsApplied")
+    assert applied.applied_count == 0
+    assert applied.skipped_count == len(rows)
+    assert all(d.get("note") == "not_selected" for d in applied.details)
+    assert (workspace_dir / "artifacts" / "tmp" / "run_1" / "step_1" / "draft.py").exists()
+    assert second_file.exists()

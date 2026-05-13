@@ -1,8 +1,13 @@
 # Collection of Lesssons Learnt
 
 ## Layer 1 runtime config flags must be audited against actual stream behavior
-- `RuntimeConfig.enable_reasoning_stream` currently exists as a defaulted config field, but `LlamaCppRuntime` does not read it; reasoning deltas from llama.cpp and Gemma `<|think|>` parsing are always active. Treat runtime config fields as untrusted until their call sites are confirmed.
-- The app currently relays reasoning as `RuntimeDelta/AppRuntimeDelta(delta_type="reasoning")`, but no consumer applies a reasoning-specific policy. `ConversationPane.append_assistant_delta` appends all delta text, so reasoning can leak into the transient assistant stream unless Layer 4 filters by `delta_type`.
+- `RuntimeConfig.enable_reasoning_stream` once existed without any `LlamaCppRuntime` call-site enforcement; reasoning deltas from llama.cpp and Gemma `<|think|>` parsing were always active. Treat runtime config fields as untrusted until their call sites and disabled-state tests are confirmed.
+- Reasoning deltas may still flow as runtime activity for trace/telemetry, but Layer 4 transcript rendering must filter by `delta_type`. `ConversationPane.append_assistant_delta` should append only normal text deltas so reasoning/tool-call activity cannot become assistant answer text.
+
+## Runtime stream parsers must drain structured tails and keep diagnostics local
+- A streaming chunk can contain more than one complete `<tool_call>...</tool_call>` block, or one complete block followed by the start of another. `emit_content_events` must loop over the pending tail until no complete tool block remains, then buffer partial markers instead of emitting them as text.
+- Parse-error diagnostics belong to one `_sync_event_iterator` invocation. Keeping them on the runtime instance can make a later unrelated stream inherit stale malformed-tool-call context.
+- Runtime stream tests should assert contiguous sequence values (`0..n-1`) as well as event types, because multi-event chunks can otherwise hide ordering regressions.
 
 ## Packaged worker subprocesses must dispatch before TUI startup
 - In source mode, `PythonStepExecutor` can run `sys.executable -m worker.sandbox_bootstrap <config>`. In a PyInstaller onefile binary, `sys.executable` is `dist/dataharness`, so the same argv becomes `dist/dataharness -m worker.sandbox_bootstrap <config>`.
@@ -259,3 +264,8 @@
 ## Worker stdlib extension allowlists must include backing modules
 
 - When worker CSV code is allowed, include the stdlib extension module backing it too: `csv` imports `_csv`. Keep both `src/worker/policy.py` and `src/worker/sandbox_bootstrap.py` allowlists in sync with `_csv` so allowed CSV imports do not fail inside the runtime sandbox.
+
+## Commands operating on the active chat need chat_id from the TUI layer
+- `handle_direct_command` builds `CommandContext.chat_id` from `arguments.get("chat_id")`. Commands like `/compact` with no declared arguments get `None` → handler silently skips work.
+- Fix pattern: inject `arguments["chat_id"] = self._active_chat_id` in `_stream_command` for commands that implicitly target the active chat. This is a Layer 4 responsibility since `active_chat_id` is UI state.
+- The auto-compaction path (`run_agentic_turn` → `compact_chat_history(chat_id)`) has the real chat_id from the turn context and was never affected.

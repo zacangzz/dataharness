@@ -29,3 +29,15 @@ def test_consumer_routes_runtime_delta_to_conversation():
     ))
     rendered = pane.text_buffer()
     assert "hello" in rendered
+
+
+def test_reasoning_delta_does_not_append_to_conversation():
+    pane = ConversationPane()
+
+    pane.append_assistant_delta(AppRuntimeDelta(
+        ts=datetime.now(UTC), workspace_id="w", chat_id="c", run_id="r",
+        delta_type="reasoning", text="hidden chain of thought", tool_call=None,
+    ))
+
+    assert "hidden chain of thought" not in pane.text_buffer()
+    assert pane.text_buffer() == ""
