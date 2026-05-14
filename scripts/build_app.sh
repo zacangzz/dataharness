@@ -31,6 +31,8 @@ uv run --with pyinstaller pyinstaller \
   --collect-submodules runtime \
   --collect-submodules worker \
   --collect-all textual \
+  --collect-all pydantic \
+  --collect-all pydantic_core \
   --collect-all llama_cpp \
   --collect-all pandas \
   --collect-all numpy \

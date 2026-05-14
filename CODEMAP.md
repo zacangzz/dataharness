@@ -279,6 +279,17 @@ user keystroke
   → ConversationPane / SidebarPane / WorkspaceBar updates
 ```
 
+**Event flow slash command → harness:**
+```
+slash text or palette selection
+  → DataHarnessApp.submit_user_text / handle_command_palette_selection
+  → DataHarnessApp._stream_command
+  → DataHarnessApp._resolve_active_chat_id (for /compact when active chat was not hydrated)
+  → AppSession.handle_direct_command
+  → Orchestrator.handle_direct_command
+  → EventConsumer.dispatch → DataHarnessApp._handle_command_* / command-specific handlers
+```
+
 ### Index D — Symbol Definition Index (where to find a name)
 
 | Symbol | Defined in |
@@ -527,9 +538,9 @@ Marker.
   - properties: `session`, `state`, `_approval_banner`, `active_chat_id`, `workspace_dir`
   - `_emit`, `_emit_error` — telemetry helpers
   - `compose_ids`, `compose`, `on_mount`, `_subscribe_status`
-  - `_ensure_chat`, `submit_user_text`
+  - `_ensure_chat`, `_resolve_active_chat_id`, `submit_user_text`
   - `_stream_turn(text)` — calls `session.run_user_turn`
-  - `_stream_command(command, arguments)` — calls `session.handle_direct_command`
+  - `_stream_command(command, arguments)` — resolves `/compact` active chat when needed, then calls `session.handle_direct_command`
   - `_build_consumer() -> EventConsumer`
   - `_handle_*` — turn_started/runtime_delta/final_message/turn_failed/turn_cancelled/command_*/doctor_*/status_changed
   - `_handle_doctor_report_ready`, `_handle_doctor_narration_ready`, `_handle_doctor_approval_requested`, `_handle_doctor_actions_applied`

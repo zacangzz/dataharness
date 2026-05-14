@@ -28,6 +28,6 @@ Each Layer is completely separate and independent, it is it's own standalone lay
 Run all project commands from the repo root.
 
 ```bash
-uv venv .venv --python 3.12
+uv venv .venv --python 3.13
 source .venv/bin/activate
 ```

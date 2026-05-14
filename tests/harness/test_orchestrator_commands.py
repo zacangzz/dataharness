@@ -66,6 +66,23 @@ async def test_compact_context_command_removed(orch):
     assert res.not_found is True
 
 
+async def test_compact_command_preserves_implicit_chat_context(orch):
+    state = RunStateRecord(workspace_id="w1", active_agent_mode="interaction")
+    await orch.create_workspace("w1")
+    summary = await orch.create_chat(workspace_id="w1", title=None)
+
+    events = [e async for e in orch.handle_direct_command(
+        state, command="compact", arguments={"chat_id": summary.chat_id},
+    )]
+
+    compact_events = [e for e in events if e.event_name == "ChatHistoryCompacted"]
+    completed = [e for e in events if e.event_name == "CommandCompleted"][0]
+    assert compact_events
+    assert compact_events[0].chat_id == summary.chat_id
+    assert completed.chat_id == summary.chat_id
+    assert "error" not in completed.result
+
+
 async def test_create_chat_command_actually_creates(orch):
     state = RunStateRecord(workspace_id="w1", active_agent_mode="interaction")
     await orch.create_workspace("w1")

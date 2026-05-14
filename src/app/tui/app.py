@@ -276,6 +276,31 @@ class DataHarnessApp(App[None]):
                 self._active_chat_id = f"chat_{uuid4().hex[:8]}"
         return self._active_chat_id
 
+    async def _resolve_active_chat_id(self) -> str | None:
+        if self._active_chat_id is not None:
+            return self._active_chat_id
+        try:
+            chats = await self._session.list_chats(self._state.workspace_id)
+        except Exception:
+            return None
+        if not chats:
+            return None
+
+        def sort_key(summary) -> str:
+            updated = getattr(summary, "updated_at", None) or getattr(summary, "created_at", None)
+            if hasattr(updated, "isoformat"):
+                return updated.isoformat()
+            return str(updated or "")
+
+        latest = max(chats, key=sort_key)
+        chat_id = getattr(latest, "chat_id", None)
+        if not chat_id:
+            return None
+        self._active_chat_id = chat_id
+        await self._rehydrate_active_chat()
+        self._refresh_trace_widgets()
+        return chat_id
+
     async def submit_user_text(self, text: str) -> None:
         if text.startswith("/"):
             try:
@@ -323,7 +348,7 @@ class DataHarnessApp(App[None]):
 
     async def _stream_command(self, command: str, arguments: dict) -> None:
         if command == "compact" and "chat_id" not in arguments:
-            arguments["chat_id"] = self._active_chat_id
+            arguments["chat_id"] = await self._resolve_active_chat_id()
         consumer = self._build_consumer()
         try:
             async for ev in self._session.handle_direct_command(
@@ -541,9 +566,12 @@ class DataHarnessApp(App[None]):
         if not snapshot.get("workspace_id"):
             return
         workspace_id = snapshot["workspace_id"]
+        if self._state.workspace_id != workspace_id:
+            self._active_chat_id = snapshot.get("chat_id")
+        elif snapshot.get("chat_id") is not None:
+            self._active_chat_id = snapshot.get("chat_id")
         self._state = self._state.model_copy(update={"workspace_id": workspace_id})
         self._workspace_dir = self._session.app_root / "workspaces" / workspace_id
-        self._active_chat_id = None
         self.query_one("#prompt_bar", PromptBar).update_state(self._state)
         self._handle_status_changed(type("_StatusEvent", (), {"snapshot": snapshot})())
         self.run_worker(self._refresh_sidebar_resources())

@@ -638,16 +638,22 @@ class Orchestrator:
             yield ev
 
     async def _handle_compact(self, ctx: CommandContext, args: dict[str, Any]) -> AsyncIterator[HarnessEvent]:
+        _log.info("_handle_compact chat_id=%s", ctx.chat_id)
         yield CommandStarted(
             ts=datetime.now(UTC), workspace_id=ctx.workspace_id, chat_id=ctx.chat_id, run_id=ctx.run_id,
             command="compact", arguments={},
         )
+        result = {}
         if ctx.chat_id:
             async for ev in self.compact_chat_history(ctx.chat_id, reason="user_requested"):
                 yield ev
+        else:
+            _log.warning("_handle_compact: missing chat_id")
+            result = {"error": "no active chat to compact"}
+
         yield CommandCompleted(
             ts=datetime.now(UTC), workspace_id=ctx.workspace_id, chat_id=ctx.chat_id, run_id=ctx.run_id,
-            command="compact", result={},
+            command="compact", result=result,
         )
 
     async def _handle_help(self, ctx: CommandContext, args: dict[str, Any]) -> AsyncIterator[HarnessEvent]:
@@ -1269,10 +1275,11 @@ class Orchestrator:
         command: str,
         arguments: dict[str, Any],
     ) -> AsyncIterator[HarnessEvent]:
-        arguments = self.registry.validate(command, arguments)
+        raw_arguments = dict(arguments)
+        arguments = self.registry.validate(command, raw_arguments)
         ctx = CommandContext(
             workspace_id=state.workspace_id,
-            chat_id=arguments.get("chat_id"),  # type: ignore[arg-type]
+            chat_id=raw_arguments.get("chat_id"),  # type: ignore[arg-type]
             run_id=getattr(state, "run_id", None),
             has_pending_approval=getattr(state, "state", None) == RunState.AWAITING_APPROVAL,
             has_pending_clarification=bool(getattr(state, "pending_clarification_id", None)),

@@ -12,6 +12,7 @@
 .pi
 .pi/
 .pi/*
+/.ruff_cache
 .worktrees
 models/
 /.venv

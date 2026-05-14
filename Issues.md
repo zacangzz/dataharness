@@ -1,5 +1,21 @@
 # Collection of Outstanding Issues
 
+## `/compact` command silently fails after workspace activation (RESOLVED 2026-05-14)
+- Observed in `chat_1c12bd35d929`: user ran `/compact`, TUI showed "compact complete", but no history was summarized and logs showed `Orchestrator._handle_compact` skipping the work.
+- Root cause: `DataHarnessApp.apply_workspace_snapshot` was unconditionally setting `self._active_chat_id = None` during workspace activation (including startup). This meant subsequent slash commands like `/compact` were sent without a `chat_id` argument.
+- Orchestrator behavior: `_handle_compact` had a silent `if ctx.chat_id:` guard. Without the ID, it yielded `CommandStarted` and `CommandCompleted` immediately with no error and no work performed.
+- Fix: `apply_workspace_snapshot` now preserves `_active_chat_id` if the workspace hasn't changed. Previously, it blindly assigned `self._active_chat_id = snapshot.get("chat_id")`, which incorrectly cleared the chat ID because `Orchestrator.status_snapshot()` hardcodes `chat_id=None`. Added logging and an explicit error result to `Orchestrator._handle_compact` for cases where the chat ID is missing.
+- Fix pass 2026-05-14: latest `dist/harness/logs/harness.log` showed `/compact` reaching Layer 3 with `chat_id=None` at `2026-05-14 16:36:40` and `2026-05-14 17:29:22`, while normal turns around those times used `chat_1c12bd35d929`. Additional root cause: startup/sidebar refresh can list chats without hydrating `DataHarnessApp._active_chat_id`. `_stream_command("compact", ...)` now resolves the latest workspace chat via Layer 4 `list_chats`, sets it active, rehydrates the transcript, and passes that `chat_id` into Layer 3.
+- Fix pass 2026-05-14: rerun after rebuild still showed `_handle_compact chat_id=None` at `2026-05-14 17:41:30`. Final root cause: `Orchestrator.handle_direct_command()` validated arguments before building `CommandContext`; `HarnessCommandRegistry.validate()` strips undeclared args, and `/compact` has no user-facing arguments, so the hidden Layer 4 `chat_id` was discarded. `handle_direct_command()` now builds command context from raw arguments and passes separately validated command args to handlers.
+- Verification: manual check of `src/app/tui/app.py` and `src/harness/orchestrator.py` logic.
+- Verification pass 2026-05-14: added `tests/app/tui/test_compact_command.py::test_compact_command_resolves_existing_chat_when_active_chat_missing` and `tests/harness/test_orchestrator_commands.py::test_compact_command_preserves_implicit_chat_context`; verified red (`chat_id=None`) then green. Focused suite `uv run pytest tests/harness/test_orchestrator_commands.py tests/harness/test_orchestrator_chat_integration.py tests/app/tui/test_compact_command.py tests/app/tui/test_command_provider.py tests/app/tui/test_prompt_bar.py tests/app/tui/test_conversation_compaction.py -q` passed (`77 passed`). A source smoke test against a copied `dist` app root compacted `chat_1c12bd35d929` from 65 messages to 9 with `compaction_count=1`. Rebuild `dist/dataharness` before testing in the packaged TUI.
+
+## Packaged binary fails with `ModuleNotFoundError: No module named 'pydantic_core'` (RESOLVED 2026-05-14)
+- Observed after edits to `src/harness/orchestrator.py` and `src/app/tui/app.py` when running `./dist/dataharness`.
+- Root cause: PyInstaller was not correctly collecting `pydantic_core` (a Pydantic v2 dependency) when building the standalone binary. This is a common issue with Pydantic v2's dynamic loading of its core C extension.
+- Fix: Updated `scripts/build_app.sh` to include `--collect-all pydantic` and `--collect-all pydantic_core`.
+- Verification: Rebuild required to confirm.
+
 ## Doctor review UI has duplicate fields/handlers and unawaited async apply path (RESOLVED 2026-05-14)
 - Observed while updating `CODEMAP.md` against the current worktree.
 - `src/app/events.py` defines `AppDoctorReportReady.action_records` twice; Pydantic will keep the latter definition, but the duplication is noisy and easy to drift.
