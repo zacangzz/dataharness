@@ -87,9 +87,21 @@ src/app/tui/screens/file_ingest.py      → app.tui.file_picker
 src/app/tui/screens/workspace_modal.py  → (none)
 
 src/harness/__init__.py                 → harness.app_store, harness.paths, harness.workspace
+src/harness/commands/__init__.py        → harness.commands.chat, harness.commands.diagnostics,
+                                           harness.commands.memory, harness.commands.provenance,
+                                           harness.commands.run, harness.commands.workspace
+src/harness/commands/chat.py            → harness.command_registry
+src/harness/commands/diagnostics.py     → harness.command_registry
+src/harness/commands/memory.py          → harness.command_registry
+src/harness/commands/provenance.py      → harness.command_registry
+src/harness/commands/run.py             → harness.command_registry
+src/harness/commands/workspace.py       → harness.command_registry
 src/harness/tools/__init__.py           → harness.tools.registry
+src/harness/tools/analysis.py           → harness.command_registry, harness.events, harness.tools.registry
 src/harness/tools/control.py            → harness.events, harness.tools.registry
 src/harness/tools/file.py              → harness.context, harness.events, harness.tools.registry
+src/harness/tools/knowledge.py          → harness.command_registry, harness.events,
+                                           harness.knowledge_intents, harness.tools.registry
 src/harness/tools/registry.py          → re, harness.events
 src/harness/app_store.py                → (none)
 src/harness/approval.py                 → (none)
@@ -109,13 +121,19 @@ src/harness/factory.py                  → harness.context, harness.db, harness
                                            worker.executor
 src/harness/fingerprints.py             → (none)
 src/harness/knowledge.py                → harness.control, harness.persistence
-src/harness/orchestrator.py             → harness.chat, harness.command_registry, harness.context,
+src/harness/orchestrator.py             → harness.chat, harness.command_registry,
+                                           harness.commands.* (chat, diagnostics, memory,
+                                            provenance, run, workspace; imported lazily inside
+                                            _register_commands), harness.context,
                                            harness.control, harness.doctor, harness.doctor_runner,
                                            harness.events, harness.exceptions, harness.knowledge,
-                                           harness.knowledge_intents, harness.persistence,
-                                           harness.state_machine, harness.status, harness.tools.control,
-                                           harness.tools.file, harness.tools.registry,
+                                           harness.persistence,
+                                           harness.state_machine, harness.status, harness.tools.analysis,
+                                           harness.tools.control, harness.tools.file,
+                                           harness.tools.knowledge, harness.tools.registry,
                                            harness.workspace_async,
+                                           (KNOWLEDGE_INTENTS bypass removed; knowledge_intents now
+                                            imported only by harness.tools.knowledge)
                                            observability, runtime.protocol, runtime.types,
                                            worker.executor, worker.models, worker.policy
 src/harness/paths.py                    → (none)
@@ -225,7 +243,8 @@ src/worker/sandbox_bootstrap.py         → (subprocess; no static src.* imports
 
 **`Orchestrator` (harness/orchestrator.py) is the hub:**
 - Builds: `ChatStore`, `ChatCompactor`, `RuntimeRequestBuilder` (chat.py); `Doctor`, `DoctorRunner` (doctor.py, doctor_runner.py); `ContextManager` (context.py); `HarnessStateMachine` (state_machine.py); `StatusBroker` (status.py); `AsyncWorkspaceManager` (workspace_async.py); `HarnessCommandRegistry` (command_registry.py); `HarnessToolRegistry` (tools/registry.py); `HarnessPersistence` (persistence.py); optional `KnowledgeManager` (knowledge.py)
-- Has `tool_registry: HarnessToolRegistry` (initialized in `__init__`); `_register_tools()` wires `file_read` via `make_file_read_handler` and the `CONTROL_TOOL_NAMES` (`family="control"`) via `make_control_handler`; `_read_workspace_file_for_tool()` delegates to module-level `_read_workspace_file`. `_dispatch_tool_call()` resolves handler/validate via `tool_registry` only (no `command_registry` fallback); control tools are catalog-only (the agentic loop `continue`s past terminal/handoff intents before dispatch)
+- Has `tool_registry: HarnessToolRegistry` (initialized in `__init__`); `_register_tools()` wires `file_read` via `make_file_read_handler`, the `CONTROL_TOOL_NAMES` (`family="control"`) via `make_control_handler`, the analysis family (`analysis_plan` + legacy `plan_analysis` alias, `analysis_request_execution`) via `make_analysis_plan_handler`/`make_analysis_request_execution_handler` (which delegate to the `plan_analysis`/`request_execution` command handlers), and the knowledge family (`knowledge_recall`, `knowledge_propose_update`) via `make_knowledge_recall_handler`/`make_knowledge_propose_update_handler`; `_read_workspace_file_for_tool()` delegates to module-level `_read_workspace_file`. `_dispatch_tool_call()` resolves handler/validate via `tool_registry` only (no `command_registry` fallback, no special-cased `KNOWLEDGE_INTENTS` bypass — that block was removed in the tools/commands split); control tools are catalog-only (the agentic loop `continue`s past terminal/handoff intents before dispatch)
+- Has `registry: HarnessCommandRegistry`; `_register_commands()` no longer holds inline descriptors — it lazily imports and delegates to family registrars in `harness.commands.*`: `register_diagnostics_commands` (doctor, compact, help), `register_chat_commands` (create/list/view/resume/delete_chat), `register_workspace_commands` (workspace + list_files/inspect_file/read_file), `register_run_commands` (plan_analysis, request_execution, cancel_run, stop_after_current_step, revise_goal, retry_step, rerun_step, mark_result_trusted/invalidated, challenge_conclusion), `register_memory_commands` (memory_review, recall_knowledge), `register_provenance_commands` (inspect_artifact, provenance_inspect, validity_inspect). Each registrar receives `(orchestrator, registry)` and wires descriptors to the unchanged `Orchestrator._handle_*` / `_make_*_handler` methods (still defined on the Orchestrator); descriptors and behaviour are byte-identical to the pre-split monolith
 - Yields: every `HarnessEvent` subclass from harness/events.py
 - Consumed by: `app.session.AppSession` (Layer 4 facade)
 
@@ -323,6 +342,16 @@ slash text or palette selection
 | `make_file_read_handler` | `src/harness/tools/file.py` |
 | `make_control_handler` | `src/harness/tools/control.py` |
 | `CONTROL_TOOL_NAMES` | `src/harness/tools/control.py` |
+| `make_analysis_plan_handler` | `src/harness/tools/analysis.py` |
+| `make_analysis_request_execution_handler` | `src/harness/tools/analysis.py` |
+| `make_knowledge_recall_handler` | `src/harness/tools/knowledge.py` |
+| `make_knowledge_propose_update_handler` | `src/harness/tools/knowledge.py` |
+| `register_chat_commands` | `src/harness/commands/chat.py` |
+| `register_diagnostics_commands` | `src/harness/commands/diagnostics.py` |
+| `register_memory_commands` | `src/harness/commands/memory.py` |
+| `register_provenance_commands` | `src/harness/commands/provenance.py` |
+| `register_run_commands` | `src/harness/commands/run.py` |
+| `register_workspace_commands` | `src/harness/commands/workspace.py` |
 | `HarnessPersistence` | `src/harness/persistence.py` |
 | `WorkspaceDb` | `src/harness/db.py` |
 | `StatusBroker` / `HarnessStatusSnapshot` | `src/harness/status.py` |
@@ -981,7 +1010,7 @@ Re-exports `HarnessCommandRegistry`.
   - **chat ops:** `create_chat`, `list_chats`, `view_chat`, `delete_chat`, `resume_chat`, `compact_chat_history`
   - **turn:** `run_turn(state, *, workspace_dir, chat_id, user_input, requested_mode, prompt_text, durable_context="") -> AsyncIterator[HarnessEvent]` — single-stream; emits `TurnPaused`/`TurnFailed(empty_output)` instead of hollow asg_ rows
   - **agentic turn:** `run_agentic_turn(state, *, workspace_dir, chat_id, user_input, requested_mode, prompt_provider, max_iterations=4) -> AsyncIterator[HarnessEvent]` — bounded multi-iteration loop: build durable context → run_turn → dispatch tool_calls → handle handoffs/empty-output/malformed-tool/plan-repair retry → ApprovalRequired termination. Layer-3 owned per spec §6.3 / §8.1.
-  - **tool dispatch:** `_dispatch_tool_call(state, name, args) -> AsyncIterator[HarnessEvent]` — routes knowledge intents via `knowledge_intents.handle_knowledge_intent`, all other names via `tool_registry.get_handler(name)`/`tool_registry.validate(name, args)` (tool-only; no `command_registry` fallback), builds a `ToolContext`; re-yields handler events
+  - **tool dispatch:** `_dispatch_tool_call(state, name, args) -> AsyncIterator[HarnessEvent]` — routes every name via `tool_registry.get_handler(name)`/`tool_registry.validate(name, args)` (tool-only; no `command_registry` fallback, no `KNOWLEDGE_INTENTS` bypass — knowledge writes now flow through the `knowledge_propose_update` tool handler which calls `knowledge_intents.handle_knowledge_intent`), builds a `ToolContext`; re-yields handler events
   - **context block:** `_build_durable_context_block(workspace_id, workspace_dir, user_query="") -> str` — adds query-relevant memory notes
   - `close`, `cancel_run(run_id, reason) -> TurnCancelled`
   - **status:** `status_snapshot(workspace_id)`, `watch_status() -> AsyncIterator`

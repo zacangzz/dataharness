@@ -37,9 +37,14 @@ from harness.events import (
     ToolCallExecuted, TurnCancelled, TurnFailed, TurnPaused, TurnStarted,
 )
 from harness.knowledge import KnowledgeManager
-from harness.knowledge_intents import KNOWLEDGE_INTENTS, handle_knowledge_intent
+from harness.tools.analysis import (
+    make_analysis_plan_handler, make_analysis_request_execution_handler,
+)
 from harness.tools.control import CONTROL_TOOL_NAMES, make_control_handler
 from harness.tools.file import make_file_read_handler
+from harness.tools.knowledge import (
+    make_knowledge_propose_update_handler, make_knowledge_recall_handler,
+)
 from harness.tools.registry import (
     HarnessToolRegistry, ToolArgSpec, ToolContext, ToolDescriptor,
 )
@@ -298,329 +303,19 @@ class Orchestrator:
 
     # ---- command registry ----
     def _register_commands(self) -> None:
-        R = self.registry
-        R.register(
-            HarnessCommandDescriptor(
-                name="doctor", slash_alias="/doctor",
-                short_description="Run the harness doctor diagnostic",
-                arguments=[ArgSpec(name="trigger", type="str", required=False, description="trigger label", example="manual")],
-                available=True, disabled_reason=None, affected_resource="doctor",
-                expected_event_types=["DoctorStarted", "CommandProgress", "DoctorFinding", "DoctorReportReady", "CommandCompleted"],
-                example_usage="/doctor",
-            ),
-            self._handle_doctor,
-        )
-        R.register(
-            HarnessCommandDescriptor(
-                name="compact", slash_alias="/compact",
-                short_description="Compact active chat history",
-                arguments=[],
-                available=True, affected_resource="chat",
-                expected_event_types=["ChatHistoryCompacted", "CommandCompleted"],
-                example_usage="/compact",
-            ),
-            self._handle_compact,
-        )
-        R.register(
-            HarnessCommandDescriptor(
-                name="help", slash_alias="/help", short_description="Show command help",
-                arguments=[ArgSpec(name="command", type="str", required=False, description="command name", example="doctor")],
-                available=True, affected_resource="run",
-                expected_event_types=["CommandCompleted"], example_usage="/help inspect_artifact",
-            ),
-            self._handle_help,
-        )
-        for n, args_spec, resource in [
-            ("create_chat", [ArgSpec(name="title", type="str", required=False, description="title", example=None)], "chat"),
-            ("list_chats", [], "chat"),
-            ("view_chat", [ArgSpec(name="chat_id", type="chat_id", required=True, description="chat id", example="chat_x")], "chat"),
-            ("resume_chat", [ArgSpec(name="chat_id", type="chat_id", required=True, description="chat id", example="chat_x")], "chat"),
-            ("delete_chat", [ArgSpec(name="chat_id", type="chat_id", required=True, description="chat id", example="chat_x")], "chat"),
-        ]:
-            R.register(
-                HarnessCommandDescriptor(
-                    name=n, slash_alias=f"/{n}", short_description=n.replace("_", " "),
-                    arguments=args_spec, available=True, affected_resource=resource,
-                    expected_event_types=["CommandStarted", "CommandCompleted"], example_usage=f"/{n}",
-                ),
-                self._make_chat_handler(n),
-            )
-        for n, args_spec in [
-            ("list_workspaces", []),
-            ("create_workspace", [ArgSpec(name="workspace_id", type="workspace_id", required=True, description="workspace id", example="w_0002")]),
-            ("rename_workspace", [
-                ArgSpec(name="old_id", type="workspace_id", required=True, description="current workspace id", example="w_old"),
-                ArgSpec(name="new_id", type="workspace_id", required=True, description="new workspace id", example="w_new"),
-            ]),
-            ("delete_workspace", [ArgSpec(name="workspace_id", type="workspace_id", required=True, description="workspace id", example="w_0002")]),
-            ("switch_workspace", [
-                ArgSpec(name="workspace_id", type="workspace_id", required=True, description="workspace id", example="w_0002"),
-                ArgSpec(name="force", type="bool", required=False, description="cancel active run before switching", example="false"),
-            ]),
-            ("workspace_status", []),
-            ("workspace_inventory", []),
-            ("list_files", []),
-            ("inspect_file", [ArgSpec(name="path", type="path", required=True, description="workspace-relative file path", example="data/sales.csv")]),
-            ("read_file", [
-                ArgSpec(name="path", type="path", required=True, description="workspace-relative file path", example="data/notes.md"),
-                ArgSpec(name="max_bytes", type="int", required=False, description="byte cap for content (default 65536)", example="65536"),
-                ArgSpec(name="encoding", type="str", required=False, description="text encoding (default utf-8)", example="utf-8"),
-            ]),
-        ]:
-            R.register(
-                HarnessCommandDescriptor(
-                    name=n, slash_alias=f"/{n}", short_description=n.replace("_", " "),
-                    arguments=args_spec, available=True, affected_resource="workspace",
-                    expected_event_types=["CommandStarted", "StatusChanged", "CommandCompleted"],
-                    example_usage=f"/{n}",
-                ),
-                self._make_workspace_handler(n),
-            )
-        R.register(
-            HarnessCommandDescriptor(
-                name="plan_analysis", slash_alias="/plan_analysis",
-                short_description="Build a Python analysis plan and request user approval",
-                arguments=[
-                    ArgSpec(name="goal", type="str", required=True,
-                            description="one-line user goal", example="count customers"),
-                    ArgSpec(name="steps", type="json", required=True,
-                            description="list of {purpose,code,declared_inputs,expected_outputs}",
-                            example="[{\"purpose\":\"...\",\"code\":\"...\"}]"),
-                ],
-                available=True, affected_resource="plan",
-                expected_event_types=["CommandStarted", "PlanReady", "ApprovalRequired", "CommandCompleted"],
-                example_usage='/plan_analysis "count customers" [{...}]',
-            ),
-            self._handle_plan_analysis,
-        )
-        R.register(
-            HarnessCommandDescriptor(
-                name="request_execution", slash_alias="/request_execution",
-                short_description="Re-emit ApprovalRequired for an existing pending step",
-                arguments=[
-                    ArgSpec(name="plan_id", type="str", required=True, description="plan id", example="plan_..."),
-                    ArgSpec(name="step_id", type="step_id", required=True, description="step id", example="step_1"),
-                ],
-                available=True, affected_resource="step",
-                expected_event_types=["CommandStarted", "ApprovalRequired", "CommandCompleted"],
-                example_usage="/request_execution plan_x step_1",
-            ),
-            self._handle_request_execution,
-        )
-        R.register(
-            HarnessCommandDescriptor(
-                name="cancel_run", slash_alias="/cancel_run",
-                short_description="Cancel the active run",
-                arguments=[ArgSpec(
-                    name="reason", type="str", required=False,
-                    description="cancellation reason", example="user_request",
-                )],
-                available=True, affected_resource="run",
-                expected_event_types=["CommandStarted", "TurnCancelled", "CommandCompleted"],
-                example_usage='/cancel_run "stuck"',
-            ),
-            self._handle_cancel_run,
-        )
-        R.register(
-            HarnessCommandDescriptor(
-                name="memory_review", slash_alias="/memory_review",
-                short_description="List memory update proposals",
-                arguments=[ArgSpec(
-                    name="status", type="str", required=False,
-                    description="filter by status (pending|approved|applied|rejected)",
-                    example="pending",
-                )],
-                available=True, affected_resource="memory",
-                expected_event_types=["CommandStarted", "CommandCompleted"],
-                example_usage="/memory_review pending",
-            ),
-            self._handle_memory_review,
-        )
-        R.register(
-            HarnessCommandDescriptor(
-                name="recall_knowledge", slash_alias="/recall_knowledge",
-                short_description="Search saved knowledge (notes, preferences, functions) for relevant information",
-                arguments=[ArgSpec(
-                    name="query", type="str", required=True,
-                    description="What to search for",
-                    example="pandas",
-                )],
-                available=True, affected_resource="memory",
-                expected_event_types=["CommandStarted", "CommandCompleted"],
-                example_usage='/recall_knowledge "data cleaning"',
-            ),
-            self._handle_recall_knowledge,
-            availability=lambda ctx: (True, None),
-        )
-        R.register(
-            HarnessCommandDescriptor(
-                name="inspect_artifact", slash_alias="/inspect_artifact",
-                short_description="Inspect an artifact file in the active workspace",
-                arguments=[ArgSpec(
-                    name="path", type="artifact_path", required=True,
-                    description="workspace-relative path",
-                    example="artifacts/tmp/run_1/step_1/output.txt",
-                )],
-                available=True, affected_resource="artifact",
-                expected_event_types=["CommandStarted", "CommandCompleted"],
-                example_usage="/inspect_artifact artifacts/out.txt",
-            ),
-            self._handle_inspect_artifact,
-        )
-        R.register(
-            HarnessCommandDescriptor(
-                name="provenance_inspect", slash_alias="/provenance_inspect",
-                short_description="Inspect lineage for an artifact",
-                arguments=[ArgSpec(
-                    name="path", type="artifact_path", required=True,
-                    description="workspace-relative artifact path",
-                    example="artifacts/out.csv",
-                )],
-                available=True, affected_resource="provenance",
-                expected_event_types=["CommandStarted", "CommandCompleted"],
-                example_usage="/provenance_inspect artifacts/out.csv",
-            ),
-            self._handle_provenance_inspect,
-        )
-        R.register(
-            HarnessCommandDescriptor(
-                name="validity_inspect", slash_alias="/validity_inspect",
-                short_description="Inspect validity_state records",
-                arguments=[ArgSpec(
-                    name="subject_id", type="str", required=False,
-                    description="filter records by subject_id (artifact path or step id)",
-                    example="artifacts/out.csv",
-                )],
-                available=True, affected_resource="provenance",
-                expected_event_types=["CommandStarted", "CommandCompleted"],
-                example_usage="/validity_inspect artifacts/out.csv",
-            ),
-            self._handle_validity_inspect,
-        )
-        R.register(
-            HarnessCommandDescriptor(
-                name="mark_result_trusted", slash_alias="/mark_result_trusted",
-                short_description="Mark a step result as user-trusted (revalidated)",
-                arguments=[
-                    ArgSpec(name="step_id", type="step_id", required=True,
-                            description="step whose result is trusted",
-                            example="step_42"),
-                    ArgSpec(name="reason", type="str", required=False,
-                            description="why trust was granted",
-                            example="spot-checked output"),
-                ],
-                available=True, affected_resource="step",
-                expected_event_types=["CommandStarted", "CommandCompleted"],
-                example_usage="/mark_result_trusted step_42 \"spot-checked output\"",
-            ),
-            self._handle_mark_result_trusted,
-        )
-        R.register(
-            HarnessCommandDescriptor(
-                name="mark_result_invalidated", slash_alias="/mark_result_invalidated",
-                short_description="Mark a step result as needing review",
-                arguments=[
-                    ArgSpec(name="step_id", type="step_id", required=True,
-                            description="step whose result is invalidated",
-                            example="step_42"),
-                    ArgSpec(name="reason", type="str", required=False,
-                            description="why the result is invalidated",
-                            example="input data changed upstream"),
-                ],
-                available=True, affected_resource="step",
-                expected_event_types=["CommandStarted", "CommandCompleted"],
-                example_usage="/mark_result_invalidated step_42 \"input changed\"",
-            ),
-            self._handle_mark_result_invalidated,
-        )
-        R.register(
-            HarnessCommandDescriptor(
-                name="challenge_conclusion", slash_alias="/challenge_conclusion",
-                short_description="Open a review proposal challenging a prior conclusion",
-                arguments=[
-                    ArgSpec(name="target", type="str", required=True,
-                            description="run_id, artifact path, or conclusion id under challenge",
-                            example="run_42"),
-                    ArgSpec(name="reason", type="str", required=True,
-                            description="why the conclusion is being challenged",
-                            example="sample size too small"),
-                ],
-                available=True, affected_resource="run",
-                expected_event_types=["CommandStarted", "CommandCompleted"],
-                example_usage="/challenge_conclusion run_42 \"sample size too small\"",
-            ),
-            self._handle_challenge_conclusion,
-        )
-        R.register(
-            HarnessCommandDescriptor(
-                name="stop_after_current_step", slash_alias="/stop_after_current_step",
-                short_description="Request graceful run stop after current step finishes",
-                arguments=[
-                    ArgSpec(name="run_id", type="run_id", required=False,
-                            description="run to stop (defaults to active run)",
-                            example="run_abc"),
-                    ArgSpec(name="reason", type="str", required=False,
-                            description="why a graceful stop was requested",
-                            example="user requested graceful stop"),
-                ],
-                available=True, affected_resource="run",
-                expected_event_types=["CommandStarted", "CommandCompleted"],
-                example_usage="/stop_after_current_step",
-            ),
-            self._handle_stop_after_current_step,
-        )
-        R.register(
-            HarnessCommandDescriptor(
-                name="revise_goal", slash_alias="/revise_goal",
-                short_description="Revise the goal text on a plan record",
-                arguments=[
-                    ArgSpec(name="plan_id", type="str", required=True,
-                            description="plan whose goal is being revised",
-                            example="plan_1"),
-                    ArgSpec(name="new_goal", type="str", required=True,
-                            description="replacement goal text",
-                            example="refined goal text"),
-                ],
-                available=True, affected_resource="plan",
-                expected_event_types=["CommandStarted", "CommandCompleted"],
-                example_usage="/revise_goal plan_1 \"refined goal text\"",
-            ),
-            self._handle_revise_goal,
-        )
-        R.register(
-            HarnessCommandDescriptor(
-                name="retry_step", slash_alias="/retry_step",
-                short_description="Request retry of a failed step within retry budget",
-                arguments=[
-                    ArgSpec(name="step_id", type="step_id", required=True,
-                            description="step to retry", example="step_5"),
-                    ArgSpec(name="reason", type="str", required=False,
-                            description="why retry was requested",
-                            example="transient timeout"),
-                ],
-                available=True, affected_resource="step",
-                expected_event_types=["CommandStarted", "CommandCompleted"],
-                example_usage="/retry_step step_5 \"transient timeout\"",
-            ),
-            self._handle_retry_step,
-        )
-        R.register(
-            HarnessCommandDescriptor(
-                name="rerun_step", slash_alias="/rerun_step",
-                short_description="Force re-execution of a step ignoring fingerprint cache",
-                arguments=[
-                    ArgSpec(name="step_id", type="step_id", required=True,
-                            description="step to rerun", example="step_7"),
-                    ArgSpec(name="reason", type="str", required=False,
-                            description="why rerun was requested",
-                            example="force fresh fingerprint"),
-                ],
-                available=True, affected_resource="step",
-                expected_event_types=["CommandStarted", "CommandCompleted"],
-                example_usage="/rerun_step step_7 \"force fresh fingerprint\"",
-            ),
-            self._handle_rerun_step,
-        )
+        from harness.commands.chat import register_chat_commands
+        from harness.commands.diagnostics import register_diagnostics_commands
+        from harness.commands.memory import register_memory_commands
+        from harness.commands.provenance import register_provenance_commands
+        from harness.commands.run import register_run_commands
+        from harness.commands.workspace import register_workspace_commands
+
+        register_diagnostics_commands(self, self.registry)
+        register_chat_commands(self, self.registry)
+        register_workspace_commands(self, self.registry)
+        register_run_commands(self, self.registry)
+        register_memory_commands(self, self.registry)
+        register_provenance_commands(self, self.registry)
 
     # ---- tool registry ----
     def _register_tools(self) -> None:
@@ -673,6 +368,121 @@ class Orchestrator:
                 ),
                 make_control_handler(_name),
             )
+        # Analysis tools — delegate to plan_analysis / request_execution commands.
+        _analysis_plan_args = [
+            ToolArgSpec(
+                name="goal", type="str", required=True,
+                description="one-line user goal", example="count customers",
+            ),
+            ToolArgSpec(
+                name="steps", type="json", required=True,
+                description="list of {purpose,code|code_lines,declared_inputs,expected_outputs}",
+                example='[{"purpose":"...","code":"..."}]',
+            ),
+        ]
+        _analysis_plan_handler = make_analysis_plan_handler(self)
+        self.tool_registry.register(
+            ToolDescriptor(
+                name="analysis_plan",
+                family="analysis",
+                short_description="Build a Python analysis plan and request user approval",
+                arguments=_analysis_plan_args,
+            ),
+            _analysis_plan_handler,
+        )
+        # Legacy alias: the runtime still emits `plan_analysis`; route it to
+        # the same analysis handler so tool-only dispatch resolves it.
+        self.tool_registry.register(
+            ToolDescriptor(
+                name="plan_analysis",
+                family="analysis",
+                short_description="Alias of analysis_plan (legacy tool name)",
+                arguments=_analysis_plan_args,
+            ),
+            _analysis_plan_handler,
+        )
+        self.tool_registry.register(
+            ToolDescriptor(
+                name="analysis_request_execution",
+                family="analysis",
+                short_description="Re-emit ApprovalRequired for an existing pending step",
+                arguments=[
+                    ToolArgSpec(
+                        name="plan_id", type="str", required=True,
+                        description="plan id", example="plan_...",
+                    ),
+                    ToolArgSpec(
+                        name="step_id", type="str", required=True,
+                        description="step id", example="step_1",
+                    ),
+                ],
+            ),
+            make_analysis_request_execution_handler(self),
+        )
+        # Knowledge tools.
+        self.tool_registry.register(
+            ToolDescriptor(
+                name="knowledge_recall",
+                family="knowledge",
+                short_description="Search saved workspace knowledge",
+                arguments=[
+                    ToolArgSpec(
+                        name="query", type="str", required=True,
+                        description="what to search for", example="pandas",
+                    ),
+                ],
+            ),
+            make_knowledge_recall_handler(self),
+        )
+        self.tool_registry.register(
+            ToolDescriptor(
+                name="knowledge_propose_update",
+                family="knowledge",
+                short_description="Propose notes, preferences, gaps, or function candidates",
+                arguments=[
+                    ToolArgSpec(
+                        name="operation",
+                        type="str",
+                        required=True,
+                        description="note|preference|gap|function_candidate",
+                        allowed_values=["note", "preference", "gap", "function_candidate"],
+                    ),
+                    ToolArgSpec(
+                        name="title", type="str", required=False,
+                        description="note title (operation=note)",
+                    ),
+                    ToolArgSpec(
+                        name="content", type="str", required=False,
+                        description="note content (operation=note)",
+                    ),
+                    ToolArgSpec(
+                        name="key", type="str", required=False,
+                        description="preference key (operation=preference)",
+                    ),
+                    ToolArgSpec(
+                        name="value", type="str", required=False,
+                        description="preference value (operation=preference)",
+                    ),
+                    ToolArgSpec(
+                        name="description", type="str", required=False,
+                        description="gap description (operation=gap)",
+                    ),
+                    ToolArgSpec(
+                        name="name", type="str", required=False,
+                        description="function name (operation=function_candidate)",
+                    ),
+                    ToolArgSpec(
+                        name="code", type="str", required=False,
+                        description="function code (operation=function_candidate)",
+                    ),
+                    ToolArgSpec(
+                        name="source_refs", type="json", required=False,
+                        description="provenance source refs",
+                    ),
+                ],
+            ),
+            make_knowledge_propose_update_handler(self),
+        )
 
     def _read_workspace_file_for_tool(
         self, workspace_dir: Path, path: str, *, max_bytes: int, encoding: str,
@@ -1649,7 +1459,7 @@ class Orchestrator:
                         if isinstance(sub_ev, CommandCompleted):
                             result = sub_ev.result
                             if (
-                                name == "plan_analysis"
+                                name in {"plan_analysis", "analysis_plan"}
                                 and isinstance(result, dict)
                                 and result.get("error")
                                 and _is_repairable_plan_analysis_error(str(result.get("error")))
@@ -1784,28 +1594,6 @@ class Orchestrator:
                 ts=datetime.now(UTC), workspace_id=state.workspace_id, run_id=state.run_id,
                 command="", result={"error": "missing tool name"},
             )
-            return
-
-        if name in KNOWLEDGE_INTENTS:
-            manager = getattr(self, "knowledge_manager", None)
-            if manager is None:
-                yield CommandCompleted(
-                    ts=datetime.now(UTC), workspace_id=state.workspace_id, run_id=state.run_id,
-                    command=name, result={"error": "knowledge manager unavailable"},
-                )
-                return
-            try:
-                rec = handle_knowledge_intent(manager, tool_call={"name": name, "arguments": args})
-                payload = rec.model_dump(mode="json") if hasattr(rec, "model_dump") else str(rec)
-                yield CommandCompleted(
-                    ts=datetime.now(UTC), workspace_id=state.workspace_id, run_id=state.run_id,
-                    command=name, result={"ok": True, "record": payload},
-                )
-            except Exception as exc:  # noqa: BLE001
-                yield CommandCompleted(
-                    ts=datetime.now(UTC), workspace_id=state.workspace_id, run_id=state.run_id,
-                    command=name, result={"error": f"{type(exc).__name__}: {exc}"},
-                )
             return
 
         try:

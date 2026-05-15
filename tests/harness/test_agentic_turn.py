@@ -25,16 +25,10 @@ from harness.orchestrator import Orchestrator
 from runtime.protocol import Runtime
 from runtime.types import RuntimeEvent, RuntimeRequest, RuntimeStatus, TokenPressure
 
-# Task 4 enforces tool-only dispatch: only tools registered in
-# `Orchestrator.tool_registry` are dispatchable from a model tool_call. These
-# tests script the legacy command name `plan_analysis` directly, which is no
-# longer registry-callable until Task 5 registers the analysis tool family
-# (`analysis_plan` / `request_execution`). Task 5's file list explicitly
-# includes this module and its Step 5 re-enables/rewrites these cases.
-_PLAN_ANALYSIS_DEFERRED_TO_TASK5 = (
-    "Deferred to Task 5: `plan_analysis` is migrated to the analysis tool "
-    "family (analysis_plan) and registered in tool_registry there."
-)
+# Task 5 registered the analysis tool family in `Orchestrator.tool_registry`.
+# The legacy `plan_analysis` tool name is kept as a registry alias of
+# `analysis_plan`, so these tests (which script `plan_analysis` directly)
+# dispatch through the tool registry like any other tool.
 
 
 class _Scenario:
@@ -248,7 +242,6 @@ async def test_unhandled_turn_failure_terminates_agentic_loop(tmp_path, workspac
     assert len(runtime.calls) == 1
 
 
-@pytest.mark.skip(reason=_PLAN_ANALYSIS_DEFERRED_TO_TASK5)
 @pytest.mark.asyncio
 async def test_approval_required_terminates_loop(tmp_path, workspace):
     runtime = FakeRuntime([
@@ -276,7 +269,6 @@ async def test_approval_required_terminates_loop(tmp_path, workspace):
     assert len(runtime.calls) == 1
 
 
-@pytest.mark.skip(reason=_PLAN_ANALYSIS_DEFERRED_TO_TASK5)
 @pytest.mark.asyncio
 async def test_invalid_plan_analysis_is_repaired_once_internally(tmp_path, workspace):
     runtime = FakeRuntime([
@@ -323,7 +315,6 @@ async def test_invalid_plan_analysis_is_repaired_once_internally(tmp_path, works
     assert "rolling calculation" in repair_prompt
 
 
-@pytest.mark.skip(reason=_PLAN_ANALYSIS_DEFERRED_TO_TASK5)
 @pytest.mark.asyncio
 async def test_plan_analysis_repair_accepts_code_lines(tmp_path, workspace):
     runtime = FakeRuntime([
@@ -394,7 +385,6 @@ async def test_runtime_error_diagnostics_are_preserved_on_turn_failed(tmp_path, 
     assert fails[0].details["diagnostics"] == {"parse_error_snippet": "bad json"}
 
 
-@pytest.mark.skip(reason=_PLAN_ANALYSIS_DEFERRED_TO_TASK5)
 @pytest.mark.asyncio
 async def test_repeated_invalid_plan_analysis_reports_no_code_ran(tmp_path, workspace):
     invalid_tool_call = {
@@ -472,3 +462,19 @@ async def test_model_tool_call_cannot_dispatch_harness_command(tmp_path, workspa
     executed = [e for e in events if isinstance(e, ToolCallExecuted)]
     assert executed and "error" in executed[0].result
     assert "unknown tool: doctor" in executed[0].result["error"]
+
+
+def test_analysis_plan_is_registered_as_tool(tmp_path):
+    orch = Orchestrator(app_root=tmp_path)
+    tool_names = {d.name for d in orch.tool_registry.list_tools()}
+    assert "analysis_plan" in tool_names
+    assert "knowledge_recall" in tool_names
+    assert "knowledge_propose_update" in tool_names
+    assert "analysis_request_execution" in tool_names
+    # Legacy `plan_analysis` tool name kept as a registry alias.
+    assert "plan_analysis" in tool_names
+
+    # Old names remain available as harness commands.
+    command_names = {d.name for d in orch.registry.help().commands}
+    assert "plan_analysis" in command_names
+    assert "recall_knowledge" in command_names

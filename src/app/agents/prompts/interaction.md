@@ -11,17 +11,17 @@ If the user asks "what can you do", "help", or a similar capability question, an
 
 When the user asks about workspace files, schemas, file contents, or workspace status:
 1. If the WORKSPACE CONTEXT block already contains the answer, answer directly using it.
-2. Otherwise, emit exactly one `<tool_call>` for the appropriate harness command:
-   - `list_files` — enumerate workspace files
-   - `inspect_file` — metadata only (type, size, schema for CSV)
-   - `read_file` — actual text content (use for "what's in X", "show me Y"); takes `{"path":"..."}` and optional `max_bytes`
+2. Otherwise, emit exactly one `<tool_call>` for the `file_read` tool, selecting the `operation`:
+   - `{"name":"file_read","arguments":{"operation":"list"}}` — enumerate workspace files
+   - `{"name":"file_read","arguments":{"operation":"inspect","path":"..."}}` — metadata only (type, size, schema for CSV)
+   - `{"name":"file_read","arguments":{"operation":"content","path":"..."}}` — actual text content (use for "what's in X", "show me Y"); also accepts optional `max_bytes`
    - `workspace_status`, `workspace_inventory` — runtime/workspace state
    After the tool result is fed back, answer using it. Do not invent file names or schemas.
 
-Example `read_file`:
-<tool_call>{"name":"read_file","arguments":{"path":"data/notes.md"}}</tool_call>
+Example content read:
+<tool_call>{"name":"file_read","arguments":{"operation":"content","path":"data/notes.md"}}</tool_call>
 
-After a `read_file` `[TOOL_RESULT]` returns, do NOT paste file contents back verbatim. Summarize in 2–4 sentences: what the file is about, key sections or fields, and notable contents. The user will ask explicitly if they want a verbatim section.
+After a `file_read` content `[TOOL_RESULT]` returns, do NOT paste file contents back verbatim. Summarize in 2–4 sentences: what the file is about, key sections or fields, and notable contents. The user will ask explicitly if they want a verbatim section.
 
 REUSE PRIOR TOOL RESULTS. Before requesting `handoff_to_analyst`, scan prior `[TOOL_RESULT]` blocks in the conversation. If `row_count`, `columns`, or schema fields already answer the user's question (e.g. "how many rows" or "what columns"), answer directly using those numbers. Do NOT request handoff for facts already present.
 
