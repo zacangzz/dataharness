@@ -1,5 +1,12 @@
 # Collection of Outstanding Issues
 
+## `plan_analysis` tool calls fail when model emits multi-line Python JSON (RESOLVED 2026-05-15)
+- Observed in packaged chat `dist/workspaces/w_0001/chats/chat_1f254123bcd0`: after the user asked for hire and termination rates for the last two months, the TUI surfaced two `parse_error: malformed tool call` messages. The raw failures were invalid JSON inside a `plan_analysis` `<tool_call>` payload.
+- Evidence: `dist/harness/logs/harness.log` shows the analyst turn for `chat_1f254123bcd0` started at `2026-05-15 14:41:52` local, retried once at `14:42:18`, then ended. `dist/harness/telemetry/runtime.events.jsonl` shows both runtime calls for the same app turn ended with `finish_reason: "unknown"`.
+- Root cause: the model was asked to embed self-contained multi-line Python in `steps[].code`, a JSON string. Literal newlines, quotes, and long code bodies make this shape brittle and can fail before Layer 3 `plan_analysis` validation runs.
+- Fix pass 2026-05-15: added backward-compatible `steps[].code_lines` support in Layer 3, normalizing it to the existing `StepContract.code` string after validation; kept legacy `code` support; rejected empty/non-string/conflicting `code_lines`; updated analyst and repair prompts to prefer `code_lines`; preserved runtime parse diagnostics in `TurnFailed.details`.
+- Verification: `uv run pytest tests/harness/test_plan_analysis_command.py tests/harness/test_agentic_turn.py tests/app/agents/test_prompt_packages.py -q` (`31 passed`); `uv run pytest tests/runtime/test_tool_calls.py tests/runtime/test_runtime_tool_call_integration.py -q` (`21 passed`).
+
 ## `/compact` command silently fails after workspace activation (RESOLVED 2026-05-14)
 - Observed in `chat_1c12bd35d929`: user ran `/compact`, TUI showed "compact complete", but no history was summarized and logs showed `Orchestrator._handle_compact` skipping the work.
 - Root cause: `DataHarnessApp.apply_workspace_snapshot` was unconditionally setting `self._active_chat_id = None` during workspace activation (including startup). This meant subsequent slash commands like `/compact` were sent without a `chat_id` argument.

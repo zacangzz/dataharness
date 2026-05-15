@@ -38,6 +38,11 @@ from harness.events import (
 )
 from harness.knowledge import KnowledgeManager
 from harness.knowledge_intents import KNOWLEDGE_INTENTS, handle_knowledge_intent
+from harness.tools.control import CONTROL_TOOL_NAMES, make_control_handler
+from harness.tools.file import make_file_read_handler
+from harness.tools.registry import (
+    HarnessToolRegistry, ToolArgSpec, ToolContext, ToolDescriptor,
+)
 from harness.exceptions import ChatNotFound, RunAlreadyActive, WorkspaceSwitchBlocked
 from harness.persistence import HarnessPersistence
 from harness.state_machine import HarnessStateMachine
@@ -56,7 +61,7 @@ _TURN_MARKER_RE = re.compile(
     re.IGNORECASE,
 )
 _READ_FILE_CHAR_CAP = 32_000
-_PLAN_ALLOWED_PACKAGES = ["pathlib", "csv", "json", "math", "statistics", "pandas", "numpy"]
+_PLAN_ALLOWED_PACKAGES = ["pathlib", "csv", "json", "math", "statistics", "time", "pandas", "numpy"]
 _PENDING_PLANS_FILE = "pending_plans.jsonl"
 
 _log = logging.getLogger("harness")
@@ -181,14 +186,14 @@ def _build_plan_analysis_repair_prompt(
         "Emit exactly one corrected `plan_analysis` tool call. Do not ask the user for "
         "internal fields; infer them from the request and schemas.\n\n"
         "Required shape:\n"
-        "<tool_call>{\"name\":\"plan_analysis\",\"arguments\":{\"goal\":\"...\",\"steps\":[{\"purpose\":\"...\",\"code\":\"...\",\"declared_inputs\":[\"data/source.csv\"],\"expected_outputs\":[\"result.txt\",\"transformed_source.csv\"]}]}}</tool_call>\n\n"
+        "<tool_call>{\"name\":\"plan_analysis\",\"arguments\":{\"goal\":\"...\",\"steps\":[{\"purpose\":\"...\",\"code_lines\":[\"import pandas as pd\",\"from pathlib import Path\",\"df = pd.read_csv(\\\"data/source.csv\\\")\",\"Path(\\\"result.txt\\\").write_text(\\\"summary\\\")\",\"print(\\\"summary\\\")\"],\"declared_inputs\":[\"data/source.csv\"],\"expected_outputs\":[\"result.txt\",\"transformed_source.csv\"]}]}}</tool_call>\n\n"
         "Examples to adapt:\n"
-        "- derived column: read a CSV, assign `df['revenue_per_unit'] = df['revenue'] / df['units']`, write `result.txt` and `transformed_sales.csv`.\n"
-        "- rolling calculation: use `df['amount_ma3'] = df['amount'].rolling(3, min_periods=1).mean()` and write both outputs.\n"
-        "- rule encoding: use `df['enterprise_flag'] = (df['plan'] == 'enterprise').astype(int)` and write both outputs.\n"
-        "- grouping: use user-provided rules or a mapping dict to create the grouped column, then write both outputs.\n\n"
-        "Use only allowed imports: pandas, numpy, pathlib, csv, json, math, statistics. "
-        "Every expected output filename must appear literally in the code."
+        "- derived column: include code_lines that read a CSV, assign `df['revenue_per_unit'] = df['revenue'] / df['units']`, write `result.txt` and `transformed_sales.csv`.\n"
+        "- rolling calculation: include code_lines using `df['amount_ma3'] = df['amount'].rolling(3, min_periods=1).mean()` and write both outputs.\n"
+        "- rule encoding: include code_lines using `df['enterprise_flag'] = (df['plan'] == 'enterprise').astype(int)` and write both outputs.\n"
+        "- grouping: include code_lines with user-provided rules or a mapping dict to create the grouped column, then write both outputs.\n\n"
+        "Use only allowed imports: pandas, numpy, pathlib, csv, json, math, statistics, time. "
+        "Every expected output filename must appear literally in code_lines."
     )
 
 
@@ -197,6 +202,21 @@ def _plan_analysis_no_code_message(validation_error: str) -> str:
         "No code ran. I could not build a valid execution plan after one internal "
         f"repair attempt. Internal validation error: {validation_error}"
     )
+
+
+def _normalize_plan_step_code(idx: int, raw: dict[str, Any]) -> str:
+    code_value = raw.get("code")
+    code_lines = raw.get("code_lines")
+    if code_lines is not None:
+        if not isinstance(code_lines, list) or not code_lines:
+            raise ValueError(f"step #{idx}: 'code_lines' must be a non-empty list of strings")
+        if not all(isinstance(line, str) for line in code_lines):
+            raise ValueError(f"step #{idx}: 'code_lines' must contain only strings")
+        joined = "\n".join(code_lines)
+        if code_value not in (None, "") and str(code_value) != joined:
+            raise ValueError(f"step #{idx}: conflicting 'code' and 'code_lines'")
+        return joined
+    return str(code_value or "")
 
 
 def _apply_safe_action(km, workspace_dir, action):
@@ -273,6 +293,8 @@ class Orchestrator:
         )
         self.registry = HarnessCommandRegistry()
         self._register_commands()
+        self.tool_registry = HarnessToolRegistry()
+        self._register_tools()
 
     # ---- command registry ----
     def _register_commands(self) -> None:
@@ -599,6 +621,63 @@ class Orchestrator:
             ),
             self._handle_rerun_step,
         )
+
+    # ---- tool registry ----
+    def _register_tools(self) -> None:
+        self.tool_registry.register(
+            ToolDescriptor(
+                name="file_read",
+                family="core",
+                short_description="Read workspace file inventory, schema, or text content",
+                arguments=[
+                    ToolArgSpec(
+                        name="operation",
+                        type="str",
+                        required=True,
+                        description="list|inspect|content",
+                        example="inspect",
+                        allowed_values=["list", "inspect", "content"],
+                    ),
+                    ToolArgSpec(
+                        name="path",
+                        type="path",
+                        required=False,
+                        description="workspace-relative path",
+                        example="data/sales.csv",
+                        regex=r"^(?!/)(?!.*(?:^|/)\.\.(?:/|$)).*",
+                    ),
+                    ToolArgSpec(
+                        name="max_bytes",
+                        type="int",
+                        required=False,
+                        description="content byte cap",
+                        example="8192",
+                    ),
+                    ToolArgSpec(
+                        name="encoding",
+                        type="str",
+                        required=False,
+                        description="text encoding",
+                        example="utf-8",
+                    ),
+                ],
+            ),
+            make_file_read_handler(self),
+        )
+        for _name in CONTROL_TOOL_NAMES:
+            self.tool_registry.register(
+                ToolDescriptor(
+                    name=_name,
+                    family="control",
+                    short_description=f"Control intent: {_name}",
+                ),
+                make_control_handler(_name),
+            )
+
+    def _read_workspace_file_for_tool(
+        self, workspace_dir: Path, path: str, *, max_bytes: int, encoding: str,
+    ) -> dict[str, Any]:
+        return _read_workspace_file(workspace_dir, path, max_bytes=max_bytes, encoding=encoding)
 
     def _append_pending_plan(self, plan_id: str, entry: dict) -> None:
         """Append a line to state/pending_plans.jsonl."""
@@ -1706,12 +1785,6 @@ class Orchestrator:
                 command="", result={"error": "missing tool name"},
             )
             return
-        if name in self._TERMINAL_INTENTS or name in self._HANDOFF_INTENTS:
-            yield CommandCompleted(
-                ts=datetime.now(UTC), workspace_id=state.workspace_id, run_id=state.run_id,
-                command=name, result={"ok": True, "note": f"{name} consumed by control loop"},
-            )
-            return
 
         if name in KNOWLEDGE_INTENTS:
             manager = getattr(self, "knowledge_manager", None)
@@ -1736,7 +1809,7 @@ class Orchestrator:
             return
 
         try:
-            handler = self.registry.get_handler(name)
+            handler = self.tool_registry.get_handler(name)
         except KeyError:
             yield CommandCompleted(
                 ts=datetime.now(UTC), workspace_id=state.workspace_id, run_id=state.run_id,
@@ -1745,7 +1818,7 @@ class Orchestrator:
             return
 
         try:
-            validated = self.registry.validate(name, args)
+            validated = self.tool_registry.validate(name, args)
         except Exception as exc:  # noqa: BLE001
             yield CommandCompleted(
                 ts=datetime.now(UTC), workspace_id=state.workspace_id, run_id=state.run_id,
@@ -1753,7 +1826,7 @@ class Orchestrator:
             )
             return
 
-        ctx = CommandContext(
+        ctx = ToolContext(
             workspace_id=state.workspace_id,
             chat_id=getattr(state, "chat_id", None),
             run_id=state.run_id,
@@ -1949,11 +2022,14 @@ class Orchestrator:
                         usage = ev.usage or {}
                         terminal_finish_reason = ev.finish_reason
                     elif ev.type == "error":
+                        details = {"finish_reason": ev.finish_reason}
+                        if ev.diagnostics:
+                            details["diagnostics"] = ev.diagnostics
                         yield TurnFailed(
                             ts=datetime.now(UTC), workspace_id=state.workspace_id, chat_id=chat_id, run_id=run_id,
                             failure_summary=ev.error_message or "runtime error",
                             error_code=ev.error_code or "runtime_error",
-                            details={"finish_reason": ev.finish_reason},
+                            details=details,
                         )
                         return
 
@@ -2260,7 +2336,7 @@ class Orchestrator:
             if not isinstance(raw, dict):
                 raise ValueError(f"step #{idx}: expected object, got {type(raw).__name__}")
             purpose = str(raw.get("purpose") or "").strip()
-            code = str(raw.get("code") or "")
+            code = _normalize_plan_step_code(idx, raw)
             declared_inputs = [str(p) for p in (raw.get("declared_inputs") or [])]
             expected_outputs = [str(p) for p in (raw.get("expected_outputs") or ["result.txt"])]
             if not purpose:

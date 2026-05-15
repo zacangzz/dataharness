@@ -4,7 +4,7 @@ import hashlib
 from pathlib import Path
 
 from app.agents.types import PromptPackage
-from harness.command_registry import HarnessCommandDescriptor, HarnessCommandRegistry
+from harness.tools.registry import HarnessToolRegistry
 
 
 MODE_INTENTS = {
@@ -34,32 +34,33 @@ MODE_INTENTS = {
 }
 
 
-def _format_command(desc: HarnessCommandDescriptor) -> str:
-    args = ", ".join(
-        f"{a.name}:{a.type}" + ("" if a.required else "?")
-        for a in desc.arguments
-    )
-    sig = f"{desc.name}({args})" if args else f"{desc.name}()"
-    return f"- `{sig}` — {desc.short_description}"
-
-
-def _tool_catalog(mode: str, registry: HarnessCommandRegistry | None) -> str:
-    callable_descs = registry.list_runtime_callable() if registry is not None else []
+def _tool_catalog(mode: str, tool_registry: HarnessToolRegistry | None) -> str:
+    if tool_registry is None:
+        tool_lines = "- (no harness tools available)"
+    else:
+        lines = []
+        for desc in tool_registry.list_tools():
+            args_parts = []
+            for arg in desc.arguments:
+                suffix = "" if arg.required else "?"
+                args_parts.append(f"{arg.name}:{arg.type}{suffix}")
+            args_str = ", ".join(args_parts)
+            lines.append(f"- `{desc.name}({args_str})` — {desc.short_description}")
+        tool_lines = "\n".join(lines) or "- (no harness tools available)"
     intents = MODE_INTENTS.get(mode, [])
-    command_lines = "\n".join(_format_command(d) for d in callable_descs) or "- (no harness tools available)"
     intent_lines = "\n".join(f"- `{intent}`" for intent in intents)
     return "\n".join(
         [
             "Available harness tool calls:",
-            "These are the only exposed harness command names. Do not invent tool names.",
-            command_lines,
+            "These are the only exposed harness tool names. Do not invent tool names.",
+            tool_lines,
             "",
             f"Allowed {mode} intents:",
             intent_lines,
             "",
             "Tool call format (one per emission):",
-            '<tool_call>{"name":"list_files","arguments":{}}</tool_call>',
-            '<tool_call>{"name":"inspect_file","arguments":{"path":"data/sales.csv"}}</tool_call>',
+            '<tool_call>{"name":"file_read","arguments":{"operation":"list"}}</tool_call>',
+            '<tool_call>{"name":"file_read","arguments":{"operation":"inspect","path":"data/sales.csv"}}</tool_call>',
         ]
     )
 
@@ -69,10 +70,10 @@ class PromptPackageRegistry:
         self,
         prompts_dir: Path,
         *,
-        command_registry: HarnessCommandRegistry | None = None,
+        tool_registry: HarnessToolRegistry | None = None,
     ) -> None:
         self.prompts_dir = prompts_dir
-        self.command_registry = command_registry
+        self.tool_registry = tool_registry
 
     def load(self, mode: str) -> PromptPackage:
         parts = []
@@ -82,7 +83,7 @@ class PromptPackageRegistry:
         parts.extend(
             [
                 (self.prompts_dir / f"{mode}.md").read_text(),
-                _tool_catalog(mode, self.command_registry),
+                _tool_catalog(mode, self.tool_registry),
                 (self.prompts_dir / "response_format.md").read_text(),
             ]
         )

@@ -17,8 +17,8 @@ When the user asks an analytical question that requires computation:
    <tool_call>{"name":"read_file","arguments":{"path":"data/notes.md"}}</tool_call>
    After `read_file` returns, summarize in 2–4 sentences. Do NOT paste file contents verbatim.
 
-2. Once you have the schema you need, emit ONE plan via `plan_analysis`. Infer the internal step `purpose` from the user's request; do not ask the user for a purpose:
-   <tool_call>{"name":"plan_analysis","arguments":{"goal":"<one-line user goal>","steps":[{"purpose":"<what this transformation computes>","code":"<self-contained python>","declared_inputs":["data/customers.csv"],"expected_outputs":["result.txt","transformed_customers.csv"]}]}}</tool_call>
+2. Once you have the schema you need, emit ONE plan via `plan_analysis`. Infer the internal step `purpose` from the user's request; do not ask the user for a purpose. Use `code_lines` instead of a multi-line `code` string so the tool call remains valid JSON:
+   <tool_call>{"name":"plan_analysis","arguments":{"goal":"<one-line user goal>","steps":[{"purpose":"<what this transformation computes>","code_lines":["import pandas as pd","from pathlib import Path","df = pd.read_csv(\"data/customers.csv\")","Path(\"result.txt\").write_text(\"summary\")","print(\"summary\")"],"declared_inputs":["data/customers.csv"],"expected_outputs":["result.txt","transformed_customers.csv"]}]}}</tool_call>
 
 3. Code requirements:
    - Self-contained: use only `pandas`, `numpy`, `pathlib`, `csv`, `json`, `math`, `statistics`, and `time`.
@@ -29,14 +29,7 @@ When the user asks an analytical question that requires computation:
    - Do NOT wrap reads in `try/except FileNotFoundError`. Do NOT call `exit()` or `sys.exit()`. Let real exceptions propagate so the harness records the actual failure.
    - Do not hardcode answers. Do not produce fake data. Do not import `os`, shell, filesystem traversal, or network libraries.
    - Concrete example — "calculate total sales":
-     ```python
-     import pandas as pd
-     from pathlib import Path
-     df = pd.read_csv("data/sales.csv")
-     total = df["amount"].sum()
-     Path("result.txt").write_text(f"Total sales: {total}")
-     print(total)
-     ```
+     <tool_call>{"name":"plan_analysis","arguments":{"goal":"calculate total sales","steps":[{"purpose":"Calculate total sales from amount values.","code_lines":["import pandas as pd","from pathlib import Path","df = pd.read_csv(\"data/sales.csv\")","total = df[\"amount\"].sum()","Path(\"result.txt\").write_text(f\"Total sales: {total}\")","print(total)"],"declared_inputs":["data/sales.csv"],"expected_outputs":["result.txt"]}]}}</tool_call>
 
 4. The harness gates execution behind explicit user approval. After emitting `plan_analysis`, stop. Do NOT execute or simulate code yourself. Do NOT invent results. Wait for the harness to surface the approval prompt and run the worker.
 

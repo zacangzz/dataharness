@@ -48,7 +48,7 @@ src/app/session.py                      → app.agents.prompt_packages, app.agen
 src/app/agents/__init__.py              → app.agents.prompt_packages, app.agents.router
 src/app/agents/types.py                 → (none)
 src/app/agents/router.py                → (none)
-src/app/agents/prompt_packages.py       → app.agents.types
+src/app/agents/prompt_packages.py       → app.agents.types, harness.tools.registry
 src/app/agents/analyst.py               → app.agents.prompt_packages
 src/app/agents/knowledge.py             → app.agents.prompt_packages
 src/app/agents/interaction.py           → app.agents.prompt_packages
@@ -87,6 +87,10 @@ src/app/tui/screens/file_ingest.py      → app.tui.file_picker
 src/app/tui/screens/workspace_modal.py  → (none)
 
 src/harness/__init__.py                 → harness.app_store, harness.paths, harness.workspace
+src/harness/tools/__init__.py           → harness.tools.registry
+src/harness/tools/control.py            → harness.events, harness.tools.registry
+src/harness/tools/file.py              → harness.context, harness.events, harness.tools.registry
+src/harness/tools/registry.py          → re, harness.events
 src/harness/app_store.py                → (none)
 src/harness/approval.py                 → (none)
 src/harness/chat.py                     → harness.exceptions, runtime.types
@@ -109,7 +113,9 @@ src/harness/orchestrator.py             → harness.chat, harness.command_regist
                                            harness.control, harness.doctor, harness.doctor_runner,
                                            harness.events, harness.exceptions, harness.knowledge,
                                            harness.knowledge_intents, harness.persistence,
-                                           harness.state_machine, harness.status, harness.workspace_async,
+                                           harness.state_machine, harness.status, harness.tools.control,
+                                           harness.tools.file, harness.tools.registry,
+                                           harness.workspace_async,
                                            observability, runtime.protocol, runtime.types,
                                            worker.executor, worker.models, worker.policy
 src/harness/paths.py                    → (none)
@@ -161,6 +167,7 @@ src/worker/sandbox_bootstrap.py         → (subprocess; no static src.* imports
 - harness/app_store: `AppStore`
 - harness/chat: `ChatMessage`, `ChatRecord`, `ChatSummary`, `ChatDeleteResult`
 - harness/command_registry: `ArgSpec`, `CommandContext`, `HarnessCommandDescriptor`, `HelpResult`
+- harness/tools/registry: `ToolContext`, `ToolArgSpec`, `ToolDescriptor`
 - harness/control: `HarnessRecord`, `ValidationFailure`, `SessionConfig`
 - harness/events: `HarnessEvent`, `HarnessEventRef`, + all `*Event` subclasses
 - harness/paths: `AppPaths`, `WorkspacePaths`
@@ -217,7 +224,8 @@ src/worker/sandbox_bootstrap.py         → (subprocess; no static src.* imports
 ### Index C — Cross-file Call/Usage Map (selected hot paths)
 
 **`Orchestrator` (harness/orchestrator.py) is the hub:**
-- Builds: `ChatStore`, `ChatCompactor`, `RuntimeRequestBuilder` (chat.py); `Doctor`, `DoctorRunner` (doctor.py, doctor_runner.py); `ContextManager` (context.py); `HarnessStateMachine` (state_machine.py); `StatusBroker` (status.py); `AsyncWorkspaceManager` (workspace_async.py); `HarnessCommandRegistry` (command_registry.py); `HarnessPersistence` (persistence.py); optional `KnowledgeManager` (knowledge.py)
+- Builds: `ChatStore`, `ChatCompactor`, `RuntimeRequestBuilder` (chat.py); `Doctor`, `DoctorRunner` (doctor.py, doctor_runner.py); `ContextManager` (context.py); `HarnessStateMachine` (state_machine.py); `StatusBroker` (status.py); `AsyncWorkspaceManager` (workspace_async.py); `HarnessCommandRegistry` (command_registry.py); `HarnessToolRegistry` (tools/registry.py); `HarnessPersistence` (persistence.py); optional `KnowledgeManager` (knowledge.py)
+- Has `tool_registry: HarnessToolRegistry` (initialized in `__init__`); `_register_tools()` wires `file_read` via `make_file_read_handler` and the `CONTROL_TOOL_NAMES` (`family="control"`) via `make_control_handler`; `_read_workspace_file_for_tool()` delegates to module-level `_read_workspace_file`. `_dispatch_tool_call()` resolves handler/validate via `tool_registry` only (no `command_registry` fallback); control tools are catalog-only (the agentic loop `continue`s past terminal/handoff intents before dispatch)
 - Yields: every `HarnessEvent` subclass from harness/events.py
 - Consumed by: `app.session.AppSession` (Layer 4 facade)
 
@@ -308,6 +316,13 @@ slash text or palette selection
 | `AppStore` | `src/harness/app_store.py` |
 | `HarnessStateMachine` | `src/harness/state_machine.py` |
 | `HarnessCommandRegistry` | `src/harness/command_registry.py` |
+| `HarnessToolRegistry` | `src/harness/tools/registry.py` |
+| `ToolContext` | `src/harness/tools/registry.py` |
+| `ToolArgSpec` | `src/harness/tools/registry.py` |
+| `ToolDescriptor` | `src/harness/tools/registry.py` |
+| `make_file_read_handler` | `src/harness/tools/file.py` |
+| `make_control_handler` | `src/harness/tools/control.py` |
+| `CONTROL_TOOL_NAMES` | `src/harness/tools/control.py` |
 | `HarnessPersistence` | `src/harness/persistence.py` |
 | `WorkspaceDb` | `src/harness/db.py` |
 | `StatusBroker` / `HarnessStatusSnapshot` | `src/harness/status.py` |
@@ -478,12 +493,12 @@ Re-exports `PromptPackageRegistry`, `AgentModeRouter`.
 **Notes:** stateless; called by `AppSession.run_user_turn`
 
 ### `src/app/agents/prompt_packages.py`
-**Imports:** `app.agents.types.PromptPackage`
+**Imports:** `app.agents.types.PromptPackage`, `harness.tools.registry.HarnessToolRegistry`
 **Defines:**
 - **var** `MODE_INTENTS` — dict `mode → list[intent]`
-- **func** `_tool_catalog(mode) -> str` — markdown listing commands + intents
+- **func** `_tool_catalog(mode, tool_registry) -> str` — markdown built from `tool_registry.list_tools()` (tool sigs) + mode intents
 - **class** `PromptPackageRegistry`
-  - `__init__(prompts_dir)`
+  - `__init__(prompts_dir, *, tool_registry=None)`
   - `load(mode) -> PromptPackage` — loads `system.md`+`mode.md`+catalog+`response_format.md`, sha256 hash
 **Notes:** prompt assembly on demand; called by mode builders + `AppSession`
 
@@ -947,6 +962,7 @@ Re-exports `HarnessCommandRegistry`.
 - **func** `_workspace_schema_snapshot(workspace_dir)` — compact JSON-lines schema context for plan repair prompts
 - **func** `_build_plan_analysis_repair_prompt(...)` — strict retry prompt for malformed `plan_analysis` tool calls
 - **func** `_plan_analysis_no_code_message(validation_error)` — final no-code-ran user message after repeated invalid plans
+- **func** `_normalize_plan_step_code(idx, raw)` — normalizes `plan_analysis` step code from legacy `code` or safer `code_lines`
 - **func** `_apply_safe_action(km, workspace_dir, action)` — auto-apply safe doctor cleanup/promotion actions
 - **func** `_read_workspace_file(...)` — raw Layer-3 workspace text read with boundary and size caps
 - **class** `Orchestrator`
@@ -965,7 +981,7 @@ Re-exports `HarnessCommandRegistry`.
   - **chat ops:** `create_chat`, `list_chats`, `view_chat`, `delete_chat`, `resume_chat`, `compact_chat_history`
   - **turn:** `run_turn(state, *, workspace_dir, chat_id, user_input, requested_mode, prompt_text, durable_context="") -> AsyncIterator[HarnessEvent]` — single-stream; emits `TurnPaused`/`TurnFailed(empty_output)` instead of hollow asg_ rows
   - **agentic turn:** `run_agentic_turn(state, *, workspace_dir, chat_id, user_input, requested_mode, prompt_provider, max_iterations=4) -> AsyncIterator[HarnessEvent]` — bounded multi-iteration loop: build durable context → run_turn → dispatch tool_calls → handle handoffs/empty-output/malformed-tool/plan-repair retry → ApprovalRequired termination. Layer-3 owned per spec §6.3 / §8.1.
-  - **tool dispatch:** `_dispatch_tool_call(state, name, args) -> AsyncIterator[HarnessEvent]` — routes knowledge intents via `knowledge_intents.handle_knowledge_intent`, others via `registry.get_handler(name)`; re-yields handler events
+  - **tool dispatch:** `_dispatch_tool_call(state, name, args) -> AsyncIterator[HarnessEvent]` — routes knowledge intents via `knowledge_intents.handle_knowledge_intent`, all other names via `tool_registry.get_handler(name)`/`tool_registry.validate(name, args)` (tool-only; no `command_registry` fallback), builds a `ToolContext`; re-yields handler events
   - **context block:** `_build_durable_context_block(workspace_id, workspace_dir, user_query="") -> str` — adds query-relevant memory notes
   - `close`, `cancel_run(run_id, reason) -> TurnCancelled`
   - **status:** `status_snapshot(workspace_id)`, `watch_status() -> AsyncIterator`
@@ -973,7 +989,7 @@ Re-exports `HarnessCommandRegistry`.
   - **execution resumption:** `resume_approved_step(...)`, `resume_with_clarification(...)`; successful worker completion starts a semantic doctor background pass
   - **artifact promotion:** `_promote_step_artifacts(workspace_dir, step_result_path, run_id) -> list[Path]` — copies successful step outputs from tmp/ to artifacts/ and memory/functions/
   - `prepare_worker_dispatch(plan, *, approval) -> dict` — validates code-exec approval
-  - `_build_plan_from_arguments(state, *, goal, steps) -> tuple[Plan, list[StepContract]]` — validates `plan_analysis` args and imports against worker policy; LLM owns code text
+  - `_build_plan_from_arguments(state, *, goal, steps) -> tuple[Plan, list[StepContract]]` — validates `plan_analysis` args and imports against worker policy; LLM owns code text via `code` or `code_lines`
   - `_handle_plan_analysis(ctx, args)` / `_handle_request_execution(ctx, args)` — registered runtime-callable commands; emit PlanReady + ApprovalRequired
   - `switch_workspace(state, *, new_workspace_id) -> RunStateRecord`
 **Notes:**

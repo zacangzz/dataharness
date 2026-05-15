@@ -127,6 +127,9 @@ Last reviewed: 2026-05-14.
 - `plan_analysis` must validate early: non-empty goal and steps, relative input
   paths, allowed imports using the worker policy, and expected output filenames
   referenced by submitted code before `ApprovalRequired` is emitted.
+- Prefer `code_lines` for model-generated `plan_analysis` Python. Embedding
+  multi-line code in a JSON `code` string is fragile with local models and can
+  fail before Layer 3 validation sees the plan.
 - Do not add broad imports such as `os` to the worker allowlist just because the
   model generated them. Tighten pre-approval validation and prompt wording so
   generated code matches the sandbox policy.
@@ -166,6 +169,9 @@ Last reviewed: 2026-05-14.
 
 ## Packaging And CLI
 
+- In sandboxed agent sessions, run ad hoc `uv run python ...` probes with
+  `UV_CACHE_DIR=/tmp/uv-cache PYTHONPATH=src` from the repo root. The default
+  uv cache under the user home directory may be blocked by sandbox permissions.
 - The packaged worker path is `dist/dataharness -m worker.sandbox_bootstrap
   <config>`. `src/cli.py` must intercept that private dispatch before argparse
   or TUI startup, otherwise the child launches the TUI and the parent reports a

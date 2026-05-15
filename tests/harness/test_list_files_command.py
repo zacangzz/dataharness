@@ -47,14 +47,3 @@ async def test_inspect_file_command_returns_schema(tmp_path):
     assert completed is not None
     assert completed.result["kind"] == "csv"
     assert completed.result["columns"] == ["col1", "col2"]
-
-
-def test_list_runtime_callable_filter(tmp_path):
-    orch = Orchestrator(app_root=tmp_path)
-    names = {d.name for d in orch.registry.list_runtime_callable()}
-    assert "list_files" in names
-    assert "inspect_file" in names
-    assert "workspace_status" in names
-    # Destructive commands must not be exposed
-    assert "delete_workspace" not in names
-    assert "doctor" not in names

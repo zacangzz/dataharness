@@ -48,7 +48,7 @@ class AppSession:
         self.mode_router = mode_router or AgentModeRouter(telemetry=self.telemetry)
         self.prompt_registry = prompt_registry or PromptPackageRegistry(
             Path(__file__).resolve().parent / "agents" / "prompts",
-            command_registry=getattr(self.orchestrator, "registry", None),
+            tool_registry=getattr(self.orchestrator, "tool_registry", None),
         )
         self._active = False
 
