@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 from collections.abc import AsyncIterator, Iterator
@@ -18,9 +19,14 @@ from runtime.types import (
 
 TOOL_START = "<tool_call>"
 TOOL_END = "</tool_call>"
-THINK_START = "<|think|>"
-THINK_END = "</|think|>"
-STREAM_MARKERS = (TOOL_START, THINK_START)
+TOOL_START_MARKERS = (TOOL_START, "tool_call>")
+THINK_START = "<|channel>thought"
+THINK_END = "<channel|>"
+LEGACY_THINK_START = "<|think|>"
+LEGACY_THINK_END = "</|think|>"
+THINK_START_MARKERS = (THINK_START, LEGACY_THINK_START)
+THINK_END_MARKERS = (THINK_END, LEGACY_THINK_END)
+STREAM_MARKERS = (*TOOL_START_MARKERS, *THINK_START_MARKERS)
 EOS_TOKENS = ("<end_of_turn>", "<eos>", "</s>")
 
 
@@ -80,6 +86,27 @@ def marker_prefix_suffix(text: str) -> str:
     return ""
 
 
+def _prefix_suffix_for(text: str, markers: tuple[str, ...]) -> str:
+    for marker in markers:
+        max_len = min(len(marker) - 1, len(text))
+        for size in range(max_len, 0, -1):
+            suffix = text[-size:]
+            if marker.startswith(suffix):
+                return suffix
+    return ""
+
+
+def _find_earliest_marker(text: str, markers: tuple[str, ...]) -> tuple[int, str] | None:
+    found: tuple[int, str] | None = None
+    for marker in markers:
+        idx = text.find(marker)
+        if idx < 0:
+            continue
+        if found is None or idx < found[0]:
+            found = (idx, marker)
+    return found
+
+
 class _SeqGen:
     def __init__(self) -> None:
         self.value = 0
@@ -88,30 +115,6 @@ class _SeqGen:
         v = self.value
         self.value += 1
         return v
-
-
-def split_gemma_think_text(
-    text: str,
-    request_id: str,
-    seq: _SeqGen,
-    *,
-    enable_reasoning_stream: bool = True,
-) -> tuple[list[RuntimeEvent], str]:
-    events: list[RuntimeEvent] = []
-    remaining = text
-    while THINK_START in remaining and THINK_END in remaining:
-        before, _, after_start = remaining.partition(THINK_START)
-        reasoning, _, after_end = after_start.partition(THINK_END)
-        if before.strip():
-            events.append(RuntimeEvent(
-                type="text_delta", request_id=request_id, seq=seq.next(), text=before.strip(),
-            ))
-        if reasoning.strip() and enable_reasoning_stream:
-            events.append(RuntimeEvent(
-                type="reasoning_delta", request_id=request_id, seq=seq.next(), text=reasoning.strip(),
-            ))
-        remaining = after_end
-    return events, remaining
 
 
 def event_from_tool_call_text(text: str, request_id: str, seq: _SeqGen) -> RuntimeEvent:
@@ -136,45 +139,70 @@ def emit_content_events(
     request_id: str,
     seq: _SeqGen,
     *,
+    in_reasoning: bool = False,
     enable_reasoning_stream: bool = True,
-) -> tuple[list[RuntimeEvent], str]:
+) -> tuple[list[RuntimeEvent], str, bool]:
+    """Statefully emit events from content. returns (events, new_buffer, in_reasoning)."""
     events: list[RuntimeEvent] = []
     pending = stream_buffer + content if stream_buffer else content
     pending = strip_full_eos(pending)
-    if THINK_START in pending and THINK_END not in pending:
-        return events, pending
-    think_events, pending = split_gemma_think_text(
-        pending,
-        request_id,
-        seq,
-        enable_reasoning_stream=enable_reasoning_stream,
-    )
-    events.extend(think_events)
+
+    current_in_reasoning = in_reasoning
+
     while pending:
-        if TOOL_START not in pending:
-            suffix = marker_prefix_suffix(pending) or eos_prefix_suffix(pending)
-            if suffix:
-                visible = pending[: -len(suffix)]
-                if visible:
+        if current_in_reasoning:
+            end = _find_earliest_marker(pending, THINK_END_MARKERS)
+            if end is not None:
+                end_idx, end_marker = end
+                before = pending[:end_idx]
+                if before and enable_reasoning_stream:
                     events.append(RuntimeEvent(
-                        type="text_delta", request_id=request_id, seq=seq.next(), text=visible,
+                        type="reasoning_delta", request_id=request_id, seq=seq.next(), text=before,
                     ))
-                return events, suffix
-            events.append(RuntimeEvent(
-                type="text_delta", request_id=request_id, seq=seq.next(), text=pending,
-            ))
-            return events, ""
-        prefix, _, rest = pending.partition(TOOL_START)
-        if prefix:
+                pending = pending[end_idx + len(end_marker):]
+                current_in_reasoning = False
+                continue
+            suffix = _prefix_suffix_for(pending, THINK_END_MARKERS) or eos_prefix_suffix(pending)
+            visible = pending[: -len(suffix)] if suffix else pending
+            if visible and enable_reasoning_stream:
+                events.append(RuntimeEvent(
+                    type="reasoning_delta", request_id=request_id, seq=seq.next(), text=visible,
+                ))
+            return events, suffix, True
+
+        marker = _find_earliest_marker(pending, (*TOOL_START_MARKERS, *THINK_START_MARKERS))
+        if marker is None:
+            suffix = marker_prefix_suffix(pending) or eos_prefix_suffix(pending)
+            visible = pending[: -len(suffix)] if suffix else pending
+            if visible:
+                events.append(RuntimeEvent(
+                    type="text_delta", request_id=request_id, seq=seq.next(), text=visible,
+                ))
+            return events, suffix, False
+
+        marker_idx, marker_text = marker
+        if marker_idx:
+            prefix = pending[:marker_idx]
             events.append(RuntimeEvent(
                 type="text_delta", request_id=request_id, seq=seq.next(), text=prefix,
             ))
-        tool_text = TOOL_START + rest
-        if TOOL_END not in tool_text:
-            return events, tool_text
-        tool_block, _, pending = tool_text.partition(TOOL_END)
-        events.append(event_from_tool_call_text(tool_block + TOOL_END, request_id, seq))
-    return events, ""
+            pending = pending[marker_idx:]
+            continue
+
+        if marker_text in THINK_START_MARKERS:
+            pending = pending[len(marker_text):]
+            current_in_reasoning = True
+            continue
+
+        if marker_text in TOOL_START_MARKERS:
+            tool_text = pending
+            if TOOL_END not in tool_text:
+                return events, tool_text, False
+            tool_block, _, pending = tool_text.partition(TOOL_END)
+            events.append(event_from_tool_call_text(tool_block + TOOL_END, request_id, seq))
+            continue
+
+    return events, "", current_in_reasoning
 
 
 class LlamaCppRuntime:
@@ -183,6 +211,7 @@ class LlamaCppRuntime:
         self._config = config
         self._status: RuntimeStatus = "loading"
         self._status_lock = threading.Lock()
+        self._llama_lock = asyncio.Lock()
         self._last_parse_error: str = ""
         self.telemetry.emit(
             Layer.RUNTIME, EventKind.RUNTIME_INIT_START,
@@ -207,7 +236,8 @@ class LlamaCppRuntime:
         return self._config.chat_format
 
     async def context_window(self) -> int:
-        return int(self._llama.n_ctx())
+        async with self._llama_lock:
+            return int(self._llama.n_ctx())
 
     def _count_tokens(self, request: RuntimeRequest) -> int:
         try:
@@ -219,8 +249,9 @@ class LlamaCppRuntime:
             return sum(max(len(m.content) // 4, 1) for m in request.messages)
 
     async def token_pressure(self, request: RuntimeRequest) -> TokenPressure:
-        ctx = int(self._llama.n_ctx())
-        prompt = self._count_tokens(request)
+        async with self._llama_lock:
+            ctx = int(self._llama.n_ctx())
+            prompt = self._count_tokens(request)
         reserved = request.max_completion_tokens
         total = prompt + reserved
         ratio = total / ctx if ctx else 1.0
@@ -244,8 +275,18 @@ class LlamaCppRuntime:
             )
 
     def _completion_kwargs(self, request: RuntimeRequest) -> dict[str, object]:
+        msgs = [m.model_dump(exclude_none=True) for m in request.messages]
+        if self._config.chat_format == "gemma":
+            system_msg = next((m for m in msgs if m["role"] == "system"), None)
+            if system_msg:
+                msgs = [m for m in msgs if m["role"] != "system"]
+                user_msg = next((m for m in msgs if m["role"] == "user"), None)
+                if user_msg:
+                    user_msg["content"] = f"{system_msg['content']}\n\n{user_msg['content']}"
+                else:
+                    msgs.insert(0, {"role": "user", "content": system_msg["content"]})
         return {
-            "messages": [m.model_dump(exclude_none=True) for m in request.messages],
+            "messages": msgs,
             "temperature": request.temperature,
             "top_k": request.top_k,
             "top_p": request.top_p,
@@ -258,6 +299,7 @@ class LlamaCppRuntime:
         rid = request.request_id
         stream_buffer = ""
         parse_error = ""
+        in_reasoning = False
         for chunk in self._llama.create_chat_completion(**self._completion_kwargs(request), stream=True):
             choice = chunk["choices"][0]
             delta = choice.get("delta", {})
@@ -270,11 +312,12 @@ class LlamaCppRuntime:
                 content = delta["content"]
                 if content:
                     try:
-                        events, stream_buffer = emit_content_events(
+                        events, stream_buffer, in_reasoning = emit_content_events(
                             content,
                             stream_buffer,
                             rid,
                             seq,
+                            in_reasoning=in_reasoning,
                             enable_reasoning_stream=self._config.enable_reasoning_stream,
                         )
                     except ModelBehaviorError as exc:
@@ -286,6 +329,7 @@ class LlamaCppRuntime:
                         )
                         events = []
                         stream_buffer = ""
+                        in_reasoning = False
                     yield from events
             finish_reason = choice.get("finish_reason")
             if finish_reason is not None:
@@ -297,11 +341,12 @@ class LlamaCppRuntime:
                     stream_buffer = ""
                     if flush_buffer:
                         try:
-                            events, stream_buffer = emit_content_events(
+                            events, stream_buffer, in_reasoning = emit_content_events(
                                 flush_buffer,
                                 "",
                                 rid,
                                 seq,
+                                in_reasoning=in_reasoning,
                                 enable_reasoning_stream=self._config.enable_reasoning_stream,
                             )
                         except ModelBehaviorError as exc:
@@ -313,6 +358,7 @@ class LlamaCppRuntime:
                             )
                             events = []
                             stream_buffer = ""
+                            in_reasoning = False
                         yield from events
                     if stream_buffer:
                         yield RuntimeEvent(
@@ -347,23 +393,24 @@ class LlamaCppRuntime:
             Layer.RUNTIME, EventKind.RUNTIME_STREAM_START,
             payload={"max_completion_tokens": request.max_completion_tokens, "request_id": request.request_id},
         )
-        bridge = SyncToAsyncBridge(
-            lambda: self._sync_event_iterator(request),
-            queue_size=self._config.bridge_queue_size,
-        )
         started = time.perf_counter()
         terminal_finish_reason: str | None = None
-        try:
-            async for event in bridge.stream():
-                yield event
-                if event.type == "finish":
-                    terminal_finish_reason = event.finish_reason
-                elif event.type == "error":
-                    terminal_finish_reason = event.finish_reason or event.error_code or "error"
-        finally:
-            self.telemetry.emit(
-                Layer.RUNTIME, EventKind.RUNTIME_STREAM_END,
-                duration_ms=(time.perf_counter() - started) * 1000,
-                payload={"finish_reason": terminal_finish_reason or "unknown"},
+        async with self._llama_lock:
+            bridge = SyncToAsyncBridge(
+                lambda: self._sync_event_iterator(request),
+                queue_size=self._config.bridge_queue_size,
             )
-            self._set_status("ready")
+            try:
+                async for event in bridge.stream():
+                    yield event
+                    if event.type == "finish":
+                        terminal_finish_reason = event.finish_reason
+                    elif event.type == "error":
+                        terminal_finish_reason = event.finish_reason or event.error_code or "error"
+            finally:
+                self.telemetry.emit(
+                    Layer.RUNTIME, EventKind.RUNTIME_STREAM_END,
+                    duration_ms=(time.perf_counter() - started) * 1000,
+                    payload={"finish_reason": terminal_finish_reason or "unknown"},
+                )
+                self._set_status("ready")

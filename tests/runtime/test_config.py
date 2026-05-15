@@ -13,6 +13,8 @@ def test_runtime_config_exposes_single_runtime_defaults() -> None:
     assert cfg.chat_format == "gemma"
     assert cfg.n_ctx == 32768
     assert cfg.n_threads == 6
+    assert cfg.type_k == 8
+    assert cfg.type_v == 8
     assert cfg.n_gpu_layers == -1
     assert cfg.flash_attn is True
     assert cfg.enable_reasoning_stream is True

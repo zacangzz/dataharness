@@ -31,6 +31,24 @@ Last reviewed: 2026-05-14.
   `HarnessCommandRegistry.validate()` intentionally strips undeclared user-facing
   args, so hidden context fields such as `chat_id` must be read from raw
   arguments when building `CommandContext`.
+- Manual `/compact` and token-pressure compaction have different retention
+  needs. Manual compaction should collapse all active chat messages into one
+  summary marker; token-pressure compaction can keep a recent-message window so
+  the current runtime turn keeps local context.
+- Compaction replacement counts are based on non-summary chat messages. Do not
+  apply that count as a raw slice over the full message list after a prior
+  compaction summary exists; preserve non-summary messages after the replaced
+  range and collapse older summary markers into the new marker.
+- TUI compaction completion must refresh both transcript and chat sidebar
+  resources. Rehydrating the conversation alone leaves sidebar message counts
+  stale even when `metadata.json` was updated correctly.
+- Compaction summaries should be DataHarness handoff checkpoints, not transcript
+  digests. Keep the runtime compaction prompt canonical in
+  `src/harness/prompts/compaction.md`, and keep `ChatCompactor` loading that file
+  instead of duplicating prompt text inline. Runtime prompts and deterministic
+  fallback summaries should preserve user goal, durable facts, workspace
+  file/schema/result references, constraints, and next steps while filtering role
+  prefixes, greetings, and test noise.
 - A visible chat list is not the same as an active TUI chat. On startup or after
   sidebar refresh, Layer 4 may know chats exist while `_active_chat_id` is still
   `None`; `/compact` should resolve the latest workspace chat before calling
@@ -46,9 +64,16 @@ Last reviewed: 2026-05-14.
 
 ## Runtime Streaming And Tool Calls
 
+- Keep Layer 1 runtime sampling conservative for structured tool prompts:
+  `RuntimeRequest.temperature` defaults to `0.2`, while explicit request
+  temperatures still pass through unchanged to llama.cpp.
 - Treat runtime config flags as untrusted until call sites and disabled-state
   tests prove they are enforced. `RuntimeConfig.enable_reasoning_stream` must
   gate both llama `reasoning_content` deltas and Gemma `<|think|>` parsing.
+- Gemma reasoning markers are not stable across templates. Runtime parsing must
+  support both `<|channel>thought`/`<channel|>` and legacy
+  `<|think|>`/`</|think|>`, stream reasoning progressively, and drop tagged
+  reasoning entirely when `enable_reasoning_stream=False`.
 - Reasoning and tool-call deltas may update trace/telemetry, but transcript
   rendering must append only normal text deltas. Layer 4 should filter by
   `delta_type` before updating assistant message text.

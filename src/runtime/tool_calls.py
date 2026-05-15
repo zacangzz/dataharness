@@ -7,7 +7,7 @@ from typing import Any
 from pydantic import BaseModel
 
 
-TOOL_CALL_RE = re.compile(r"<tool_call>(.*?)</tool_call>", re.DOTALL)
+TOOL_CALL_RE = re.compile(r"<?tool_call>(.*?)</tool_call>", re.DOTALL)
 
 
 class ToolCallParseError(ValueError):

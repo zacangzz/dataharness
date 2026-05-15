@@ -545,6 +545,7 @@ class DataHarnessApp(App[None]):
                 pass
             return
         self.run_worker(self._rehydrate_active_chat())
+        self.run_worker(self._refresh_sidebar_resources())
 
     async def _rehydrate_active_chat(self) -> None:
         chat_id = self._active_chat_id

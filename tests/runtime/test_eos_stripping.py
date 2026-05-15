@@ -10,9 +10,12 @@ from runtime.llama_cpp_runtime import (
 def _drain(chunks: list[str]) -> tuple[list[str], str]:
     seq = _SeqGen()
     buffer = ""
+    in_reasoning = False
     texts: list[str] = []
     for chunk in chunks:
-        events, buffer = emit_content_events(chunk, buffer, "rid", seq)
+        events, buffer, in_reasoning = emit_content_events(
+            chunk, buffer, "rid", seq, in_reasoning=in_reasoning,
+        )
         for ev in events:
             if ev.type == "text_delta" and ev.text:
                 texts.append(ev.text)

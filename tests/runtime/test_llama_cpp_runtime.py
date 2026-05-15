@@ -1,3 +1,5 @@
+import asyncio
+
 from runtime.config import RuntimeConfig
 from runtime.llama_cpp_runtime import LlamaCppRuntime, build_llama_kwargs
 from runtime.types import RuntimeMessage, RuntimeRequest
@@ -28,15 +30,29 @@ def test_build_llama_kwargs_uses_runtime_config_values() -> None:
 
 def test_completion_kwargs_include_sampling_defaults() -> None:
     runtime = LlamaCppRuntime.__new__(LlamaCppRuntime)
+    runtime._config = RuntimeConfig(model_path="dummy")
     request = RuntimeRequest(
         messages=[RuntimeMessage(role="user", content="hi")],
         max_completion_tokens=128,
         request_id="r1",
     )
     kwargs = runtime._completion_kwargs(request)
-    assert kwargs["temperature"] == 1.0
+    assert kwargs["temperature"] == 0.2
     assert kwargs["top_k"] == 64
     assert kwargs["top_p"] == 0.95
+
+
+def test_completion_kwargs_pass_request_temperature_unchanged() -> None:
+    runtime = LlamaCppRuntime.__new__(LlamaCppRuntime)
+    runtime._config = RuntimeConfig(model_path="dummy")
+    request = RuntimeRequest(
+        messages=[RuntimeMessage(role="user", content="hi")],
+        max_completion_tokens=128,
+        temperature=0.73,
+        request_id="r1",
+    )
+    kwargs = runtime._completion_kwargs(request)
+    assert kwargs["temperature"] == 0.73
 
 
 async def test_runtime_exposes_token_pressure_report() -> None:
@@ -52,6 +68,7 @@ async def test_runtime_exposes_token_pressure_report() -> None:
     runtime = LlamaCppRuntime.__new__(LlamaCppRuntime)
     runtime._config = cfg
     runtime._llama = FakeLlama()
+    runtime._llama_lock = asyncio.Lock()
     request = RuntimeRequest(
         messages=[RuntimeMessage(role="user", content="one two three four")],
         max_completion_tokens=512,

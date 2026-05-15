@@ -1378,7 +1378,10 @@ class Orchestrator:
             self.compactor = ChatCompactor(
                 store=self.chat_store, runtime=self.runtime, runtime_lock=self._runtime_lock,
             )
-        async for status in self.compactor.compact(chat_id, reason=reason):
+        recent_turns_kept = 0 if reason == "user_requested" else None
+        async for status in self.compactor.compact(
+            chat_id, reason=reason, recent_turns_kept=recent_turns_kept,
+        ):
             snapshot = await self.chat_store.view_chat(chat_id)
             replaced = None
             summary_tokens = None
@@ -1526,6 +1529,8 @@ class Orchestrator:
                         msg = (ev.failure_summary or "").lower()
                         if "malformed tool" in msg or "tool_call" in msg or "modelbehavior" in msg:
                             malformed_failed = True
+                        else:
+                            return
 
             if approval_pending:
                 return

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import shutil
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -14,6 +15,8 @@ from pydantic import BaseModel, Field
 
 from harness.exceptions import ChatNotFound, ChatWorkspaceMismatch
 from runtime.types import RuntimeMessage, RuntimeRequest
+
+_COMPACTION_PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "compaction.md"
 
 
 class ChatMessage(BaseModel):
@@ -154,7 +157,8 @@ class ChatStore:
         )
         async with self._lock:
             rec = await self._load_record(chat_id)
-            rec.messages = [marker] + rec.messages[replaced_turn_count:]
+            non_summary = [m for m in rec.messages if m.role != "compacted_summary"]
+            rec.messages = [marker] + non_summary[replaced_turn_count:]
             rec.message_count = len(rec.messages)
             rec.token_estimate = sum(m.token_estimate for m in rec.messages)
             rec.last_compacted_at = datetime.now(UTC)
@@ -415,23 +419,27 @@ class ChatCompactor:
         self.max_summary_tokens = max_summary_tokens
 
     async def compact(
-        self, chat_id: str, *, reason: str,
+        self, chat_id: str, *, reason: str, recent_turns_kept: int | None = None,
     ) -> AsyncIterator[Literal["queued", "running", "completed", "failed"]]:
         yield "queued"
         async with self.runtime_lock:
             yield "running"
             try:
                 rec = await self.store.view_chat(chat_id)
+                existing_summaries = [m for m in rec.messages if m.role == "compacted_summary"]
                 non_summary = [m for m in rec.messages if m.role != "compacted_summary"]
-                if len(non_summary) <= self.recent_turns_kept:
+                keep_recent = self.recent_turns_kept if recent_turns_kept is None else max(0, recent_turns_kept)
+                if not non_summary or (keep_recent > 0 and len(non_summary) <= keep_recent):
                     yield "completed"
                     return
-                older = non_summary[: -self.recent_turns_kept]
+                older = non_summary if keep_recent == 0 else non_summary[:-keep_recent]
                 replaced = len(older)
                 if self.runtime is None:
-                    summary_text = "\n".join(f"- {m.role}: {m.text[:120]}" for m in older)
+                    summary_text = self._fallback_summary(existing_summaries + older)
                 else:
-                    summary_text = await self._summarize_via_runtime(older)
+                    summary_text = await self._summarize_via_runtime(existing_summaries + older)
+                    if self._looks_like_transcript_echo(summary_text):
+                        summary_text = self._fallback_summary(existing_summaries + older)
                 token_est = max(len(summary_text) // 4, 1)
                 await self.store.append_compaction(
                     chat_id, summary_text=summary_text,
@@ -444,14 +452,87 @@ class ChatCompactor:
                 )
                 yield "failed"
 
+    def _fallback_summary(self, messages: list[ChatMessage]) -> str:
+        if not messages:
+            return "Summary of compacted chat:\n- No prior chat content was available to summarize."
+
+        def clean(text: str, limit: int = 220) -> str:
+            collapsed = " ".join(text.split())
+            collapsed = re.sub(r"^\[compacted earlier turns\]\s*", "", collapsed, flags=re.IGNORECASE)
+            collapsed = re.sub(r"^summary of compacted chat:\s*", "", collapsed, flags=re.IGNORECASE)
+            collapsed = re.sub(
+                r"^(assistant|user|system|compacted_summary):\s*",
+                "",
+                collapsed,
+                flags=re.IGNORECASE,
+            )
+            return collapsed if len(collapsed) <= limit else f"{collapsed[: limit - 1].rstrip()}..."
+
+        def is_trivial_user_text(text: str) -> bool:
+            normalized = re.sub(r"\s+", " ", text.strip().lower())
+            return normalized in {
+                "?", "and?", "hello", "hi", "hey", "test", "testing",
+                "ok", "okay", "thanks", "thank you",
+            }
+
+        def is_trivial_assistant_text(text: str) -> bool:
+            normalized = re.sub(r"\s+", " ", text.strip().lower())
+            return (
+                normalized.startswith("hello. i am dataharness")
+                or normalized in {"hello.", "hello", "hi.", "hi"}
+            )
+
+        cleaned_messages = [
+            (m.role, clean(m.text))
+            for m in messages
+            if m.text.strip()
+        ]
+        user_items = [
+            text for role, text in cleaned_messages
+            if role == "user" and not is_trivial_user_text(text)
+        ]
+        progress_items = [
+            text for role, text in cleaned_messages
+            if role in {"assistant", "compacted_summary"} and not is_trivial_assistant_text(text)
+        ]
+        file_refs = sorted({
+            match
+            for _, text in cleaned_messages
+            for match in re.findall(
+                r"\b(?:data/)?[A-Za-z0-9_.-]+\.(?:csv|tsv|xlsx|xls|json|parquet|txt|md|py|ipynb)\b",
+                text,
+            )
+        })
+
+        current_goal = user_items[-1] if user_items else "Continue the active DataHarness data-analysis conversation."
+        progress = "; ".join(progress_items[-3:]) if progress_items else "No durable analysis result was established before compaction."
+        references = ", ".join(file_refs) if file_refs else "No specific workspace files were established before compaction."
+
+        lines = [
+            "Summary of compacted chat:",
+            f"- Current user goal: {current_goal}",
+            f"- Progress and facts: {progress}",
+            f"- Data/workspace references: {references}",
+            "- Constraints and preferences: Continue inside DataHarness as a local-first data-analysis assistant; preserve workspace facts, file paths, schemas, approvals, errors, and results.",
+            "- Next steps: Answer the latest user request using the preserved context; inspect workspace data or request approval for analysis only when needed.",
+        ]
+        return "\n".join(lines)
+
+    @staticmethod
+    def _looks_like_transcript_echo(summary_text: str) -> bool:
+        stripped = summary_text.strip()
+        lowered = stripped.lower()
+        if lowered.startswith(("assistant:", "user:", "system:", "compacted_summary:")):
+            return True
+        if "analysis plan request" in lowered:
+            return True
+        return False
+
     async def _summarize_via_runtime(self, older: list[ChatMessage]) -> str:
         joined = "\n".join(f"{m.role}: {m.text}" for m in older)
         request = RuntimeRequest(
             messages=[
-                RuntimeMessage(role="system", content=(
-                    "Summarize the following chat turns in 6-10 bullet points, preserving "
-                    "decisions, user preferences, and outstanding tasks."
-                )),
+                RuntimeMessage(role="system", content=self._load_compaction_prompt()),
                 RuntimeMessage(role="user", content=joined),
             ],
             max_completion_tokens=self.max_summary_tokens,
@@ -462,3 +543,6 @@ class ChatCompactor:
             if ev.type == "text_delta":
                 chunks.append(ev.text or "")
         return "".join(chunks).strip() or "(empty summary)"
+
+    def _load_compaction_prompt(self) -> str:
+        return _COMPACTION_PROMPT_PATH.read_text(encoding="utf-8").strip()

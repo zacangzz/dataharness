@@ -1,5 +1,8 @@
+from datetime import UTC, datetime
+
 import pytest
 
+from harness.chat import ChatMessage
 from harness.command_registry import CommandContext
 from harness.exceptions import RunAlreadyActive, WorkspaceSwitchBlocked
 from harness.orchestrator import Orchestrator
@@ -81,6 +84,35 @@ async def test_compact_command_preserves_implicit_chat_context(orch):
     assert compact_events[0].chat_id == summary.chat_id
     assert completed.chat_id == summary.chat_id
     assert "error" not in completed.result
+
+
+async def test_manual_compact_replaces_all_chat_messages(orch):
+    state = RunStateRecord(workspace_id="w1", active_agent_mode="interaction")
+    await orch.create_workspace("w1")
+    summary = await orch.create_chat(workspace_id="w1", title=None)
+    for index in range(5):
+        await orch.chat_store.append_message(summary.chat_id, ChatMessage(
+            message_id=f"m{index}",
+            role="user" if index % 2 == 0 else "assistant",
+            text=f"message {index}",
+            ts=datetime.now(UTC),
+            turn_id=None,
+            active_mode="interaction",
+            token_estimate=2,
+        ))
+
+    events = [e async for e in orch.handle_direct_command(
+        state, command="compact", arguments={"chat_id": summary.chat_id},
+    )]
+
+    record = await orch.view_chat(summary.chat_id)
+    completed = [
+        e for e in events
+        if e.event_name == "ChatHistoryCompacted" and e.status == "completed"
+    ][0]
+    assert record.message_count == 1
+    assert record.messages[0].role == "compacted_summary"
+    assert completed.replaced_turn_count == 5
 
 
 async def test_create_chat_command_actually_creates(orch):

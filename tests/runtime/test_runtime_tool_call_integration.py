@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 from runtime.config import RuntimeConfig
@@ -43,6 +45,7 @@ def make_runtime(
     runtime._llama = fake
     runtime._status = "ready"
     runtime._status_lock = threading.Lock()
+    runtime._llama_lock = asyncio.Lock()
     runtime.telemetry = _NullTelemetry()
     return runtime
 
@@ -179,9 +182,37 @@ async def test_stream_splits_gemma_think_block_across_chunks() -> None:
     ]
     runtime = make_runtime(FakeLlama(chunks=chunks))
     events = await collect_events(runtime, make_request())
-    assert [event.type for event in events] == ["reasoning_delta", "text_delta", "finish"]
-    assert events[0].text == "inspect columns"
-    assert events[1].text == "Ready."
+    assert [event.type for event in events] == [
+        "reasoning_delta",
+        "reasoning_delta",
+        "text_delta",
+        "finish",
+    ]
+    assert events[0].text == "inspect "
+    assert events[1].text == "columns"
+    assert events[2].text == "Ready."
+
+
+async def test_stream_emits_gemma_channel_reasoning_progressively() -> None:
+    chunks = [
+        {"choices": [{"delta": {"content": "Before <|channel>thoughtinspect "}, "finish_reason": None}]},
+        {"choices": [{"delta": {"content": "columns"}, "finish_reason": None}]},
+        {"choices": [{"delta": {"content": "<channel|>Ready."}, "finish_reason": None}]},
+        {"choices": [{"delta": {}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 5, "completion_tokens": 7}},
+    ]
+    runtime = make_runtime(FakeLlama(chunks=chunks))
+    events = await collect_events(runtime, make_request())
+    assert [event.type for event in events] == [
+        "text_delta",
+        "reasoning_delta",
+        "reasoning_delta",
+        "text_delta",
+        "finish",
+    ]
+    assert events[0].text == "Before "
+    assert events[1].text == "inspect "
+    assert events[2].text == "columns"
+    assert events[3].text == "Ready."
 
 
 async def test_stream_drops_gemma_think_block_when_reasoning_disabled() -> None:
@@ -196,6 +227,21 @@ async def test_stream_drops_gemma_think_block_when_reasoning_disabled() -> None:
     events = await collect_events(runtime, make_request())
     assert [event.type for event in events] == ["text_delta", "finish"]
     assert events[0].text == "Ready."
+
+
+async def test_stream_drops_gemma_channel_reasoning_when_reasoning_disabled() -> None:
+    chunks = [
+        {"choices": [{"delta": {"content": "Before <|channel>thoughtinspect columns<channel|>Ready."}, "finish_reason": None}]},
+        {"choices": [{"delta": {}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 5, "completion_tokens": 7}},
+    ]
+    runtime = make_runtime(
+        FakeLlama(chunks=chunks),
+        enable_reasoning_stream=False,
+    )
+    events = await collect_events(runtime, make_request())
+    assert [event.type for event in events] == ["text_delta", "text_delta", "finish"]
+    assert events[0].text == "Before "
+    assert events[1].text == "Ready."
 
 
 async def test_token_pressure_uses_llama_tokenizer_when_available() -> None:
@@ -259,3 +305,33 @@ async def test_stream_repairs_malformed_tool_call() -> None:
     assert len(tool_events) == 1
     assert tool_events[0].tool_call["name"] == "doctor"
     assert tool_events[0].tool_call["arguments"] == {"value": "manual"}
+
+
+async def test_stream_repairs_missing_bracket_tool_call() -> None:
+    chunks = [
+        {"choices": [{"delta": {"content": 'tool_call>{"name":"inspect","arguments":{"path":"x"}}</tool_call>'}, "finish_reason": None}]},
+        {"choices": [{"delta": {}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 5, "completion_tokens": 7}},
+    ]
+    runtime = make_runtime(FakeLlama(chunks=chunks))
+    events = await collect_events(runtime, make_request())
+    tool_events = [e for e in events if e.type == "tool_call"]
+    assert len(tool_events) == 1
+    assert tool_events[0].tool_call["name"] == "inspect"
+
+
+def test_completion_kwargs_folds_system_message_for_gemma() -> None:
+    runtime = make_runtime(FakeLlama())
+    runtime._config = RuntimeConfig(model_path="dummy.gguf", chat_format="gemma")
+    req = RuntimeRequest(
+        request_id="1",
+        max_completion_tokens=100,
+        messages=[
+            RuntimeMessage(role="system", content="System Rule"),
+            RuntimeMessage(role="user", content="User Prompt"),
+        ]
+    )
+    kwargs = runtime._completion_kwargs(req)
+    msgs = kwargs["messages"]
+    assert len(msgs) == 1
+    assert msgs[0]["role"] == "user"
+    assert msgs[0]["content"] == "System Rule\n\nUser Prompt"

@@ -20,8 +20,8 @@ class RuntimeConfig(BaseModel):
     n_ctx: int = 32768
     n_batch: int = 512
     n_threads: int | None = None
-    type_k: int | None = 2
-    type_v: int | None = 2
+    type_k: int | None = 8
+    type_v: int | None = 8
     n_gpu_layers: int = -1
     offload_kqv: bool = True
     flash_attn: bool = True

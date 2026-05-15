@@ -800,6 +800,7 @@ Re-exports `AppStore`, `AppPaths`, `WorkspacePaths`, `ActiveWorkspace`, `Workspa
 - **class** `ChatRecord(BaseModel)` — messages + metadata + compaction history
 - **class** `ChatSummary(BaseModel)`
 - **class** `ChatDeleteResult(BaseModel)`
+- **const** `_COMPACTION_PROMPT_PATH` — canonical Layer 3 prompt file at `src/harness/prompts/compaction.md`
 - **func** `_new_chat_id()` / `_estimate_tokens(text)`
 - **class** `ChatStore` — workspace-scoped persistence under `<app_root>/chats/<workspace_id>/<chat_id>/`
   - `create_chat`, `append_message`, `append_compaction`, `register_chat`, `view_chat`, `list_chats`, `delete_chat`, `cascade_delete_for_workspace`
@@ -808,10 +809,12 @@ Re-exports `AppStore`, `AppPaths`, `WorkspacePaths`, `ActiveWorkspace`, `Workspa
   - `__init__(context_window, *, completion_reserve_pct=0.25, durable_pct=0.30, summary_pct=0.15, recent_pct=0.25, recent_turns_kept=8, chat_format=None)`
   - `build_messages(*, active_mode_prompt, durable_context, chat_record, current_user_text) -> list[RuntimeMessage]` — when `chat_format` indicates `system` role is unsupported, folds persona+durable+summaries into `[SYSTEM]...[/SYSTEM]` prefix on first user turn; deduplicates current user text against the trailing entry of `chat_record.messages`
 - **class** `ChatCompactor`
-  - `compact(chat_id, *, reason) -> AsyncIterator[Literal[...]]`
+  - `compact(chat_id, *, reason, recent_turns_kept=None) -> AsyncIterator[Literal[...]]`
+  - `_fallback_summary(messages)`, `_looks_like_transcript_echo(summary_text)`, `_summarize_via_runtime(older)`, `_load_compaction_prompt()`
 **Notes:**
 - Storage: `messages.jsonl` + `metadata.json`
 - Token budget split: 30% durable / 15% summary / 25% recent / 25% completion reserve
+- Compaction summaries use a DataHarness handoff shape. Runtime prompting is loaded from `src/harness/prompts/compaction.md`, and deterministic fallback preserves the same current user goal, durable progress/facts, workspace file references, constraints/preferences, and next steps while filtering role-prefixed transcript echoes and trivial greetings/test messages.
 
 ### `src/harness/command_registry.py`
 **Imports:** `harness.events.HarnessEvent`
@@ -1085,12 +1088,11 @@ Re-exports `RuntimeConfig`, `auto_ctx_from_ram_gb` from `runtime.config`.
 ### `src/runtime/llama_cpp_runtime.py`
 **Imports:** `observability.{Telemetry, resolve_telemetry_dir}`; `observability.events.{EventKind, Layer}`; `runtime.bridge.SyncToAsyncBridge`; `runtime.config.RuntimeConfig`; `runtime.tool_calls.{ToolCallParseError, parse_tool_call_block, repair_tool_call_block}`; `runtime.types.{ModelBehaviorError, RuntimeEvent, RuntimeInputError, RuntimeMessage, RuntimeRequest, RuntimeStatus, TokenPressure}`
 **Defines:**
-- **vars** `TOOL_START`, `TOOL_END`, `THINK_START`, `THINK_END`, `STREAM_MARKERS`, `EOS_TOKENS`
-- **func** `strip_eos(text)`, `strip_full_eos(text)`, `eos_prefix_suffix(text)`, `build_llama_kwargs(config)`, `marker_prefix_suffix(text)`
+- **vars** `TOOL_START`, `TOOL_END`, `TOOL_START_MARKERS`, `THINK_START`, `THINK_END`, `LEGACY_THINK_START`, `LEGACY_THINK_END`, `THINK_START_MARKERS`, `THINK_END_MARKERS`, `STREAM_MARKERS`, `EOS_TOKENS`
+- **func** `strip_eos(text)`, `strip_full_eos(text)`, `eos_prefix_suffix(text)`, `build_llama_kwargs(config)`, `marker_prefix_suffix(text)`, `_prefix_suffix_for(text, markers)`, `_find_earliest_marker(text, markers)`
 - **class** `_SeqGen` — `next()` increment counter
-- **func** `split_gemma_think_text(text, request_id, seq, enable_reasoning_stream=True)` — parse reasoning blocks and drop reasoning text when disabled
 - **func** `event_from_tool_call_text(text, request_id, seq)` — text → `RuntimeEvent` (try parse, fallback to repair)
-- **func** `emit_content_events(content, stream_buffer, request_id, seq, enable_reasoning_stream=True)` — typed event extraction with partial-marker buffering; loops through multiple tool calls in one chunk/tail
+- **func** `emit_content_events(content, stream_buffer, request_id, seq, in_reasoning=False, enable_reasoning_stream=True)` — stateful typed event extraction with partial-marker buffering; streams Gemma channel/legacy reasoning progressively; loops through multiple tool calls in one chunk/tail
 - **class** `LlamaCppRuntime` (implements `runtime.protocol.Runtime`)
   - `__init__(config, telemetry=None)` — load model
   - `_set_status`, `status`, `chat_format` (property, exposes `_config.chat_format`), `context_window`
@@ -1098,7 +1100,7 @@ Re-exports `RuntimeConfig`, `auto_ctx_from_ram_gb` from `runtime.config`.
   - `token_pressure(request)`, `validate_request(request)`
   - `_completion_kwargs(request)`, `_sync_event_iterator(request)` — yields RuntimeEvents; keeps parse-error diagnostics local to each stream
   - `stream(request) -> AsyncIterator[RuntimeEvent]` — wraps sync iter via `SyncToAsyncBridge`
-**Notes:** state machine loading→ready→streaming→ready (lock-protected)
+**Notes:** state machine loading→ready→streaming→ready (status lock-protected); all post-init `_llama` access is serialized through `_llama_lock`
 
 ### `src/runtime/protocol.py`
 **Imports:** `runtime.types.{RuntimeEvent, RuntimeRequest, RuntimeStatus, TokenPressure}`
@@ -1262,7 +1264,7 @@ Re-exports `PythonStepExecutor` (executor); `ExecutionEnvelope`, `ExecutionStatu
 - New events (app): `AppChatHistoryCompacted`, `AppDoctorNarrationReady`, `AppDoctorApprovalRequested`, `AppDoctorActionsApplied` (`src/app/events.py`); all mapped in `src/app/event_mapping.py`.
 - `Orchestrator.apply_doctor_actions(report_id, decision, workspace_id, workspace_dir, chat_id, action_ids=None)` reads `tmp_actions` rows, calls `Doctor.apply_tmp_action`, yields `DoctorActionsApplied`; selected `action_ids` limit application to checked doctor actions.
 - `DoctorRunner.__init__(doctor, persistence, runtime, knowledge_manager, chat_store)` now persists `DoctorReport` + `TmpAction` rows during `run` (was previously sidebar-only), and full/semantic modes can mine chat memory or assess saved scripts through the runtime.
-- `Orchestrator.compact_chat_history` now populates `replaced_turn_count` and `summary_token_estimate` on completed `ChatHistoryCompacted`.
+- `Orchestrator.compact_chat_history` now populates `replaced_turn_count` and `summary_token_estimate` on completed `ChatHistoryCompacted`; manual `user_requested` compaction passes `recent_turns_kept=0`, while token-pressure compaction keeps the compactor default recent window.
 - `AppSession.handle_direct_command` post-processes `doctor` to call `_stream_doctor_narration_and_approval` (renders LLM narration via prompt `src/app/agents/prompts/doctor_narrator.md`).
 - `AppSession.handle_doctor_approval(state, workspace_dir, report_id, decision, action_ids=None)` calls `Orchestrator.apply_doctor_actions`.
-- TUI: `ConversationPane.append_compaction`, `append_doctor_line`, `append_doctor_block` (`src/app/tui/widgets.py`); blocks `CompactionSummaryBlock`, `DoctorMessageBlock` (`src/app/tui/conversation.py`). Rehydrate renders `compacted_summary` role as `CompactionSummaryBlock`. New handlers in `DataHarnessApp`: `_handle_chat_history_compacted`, `_handle_doctor_narration_ready`, `_handle_doctor_approval_requested`, `_handle_doctor_actions_applied`; doctor action records render in `ApprovalBanner.show_doctor_review`, suppress stale clarification prompts, and dispatch selected ids through `_stream_doctor_approval`.
+- TUI: `ConversationPane.append_compaction`, `append_doctor_line`, `append_doctor_block` (`src/app/tui/widgets.py`); blocks `CompactionSummaryBlock`, `DoctorMessageBlock` (`src/app/tui/conversation.py`). Rehydrate renders `compacted_summary` role as `CompactionSummaryBlock`. New handlers in `DataHarnessApp`: `_handle_chat_history_compacted`, `_handle_doctor_narration_ready`, `_handle_doctor_approval_requested`, `_handle_doctor_actions_applied`; completed compaction rehydrates the active transcript and refreshes sidebar resources so chat counts update. Doctor action records render in `ApprovalBanner.show_doctor_review`, suppress stale clarification prompts, and dispatch selected ids through `_stream_doctor_approval`.

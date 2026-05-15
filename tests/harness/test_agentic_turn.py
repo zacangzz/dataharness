@@ -213,6 +213,31 @@ async def test_empty_output_gives_up_after_one_retry(tmp_path, workspace):
 
 
 @pytest.mark.asyncio
+async def test_unhandled_turn_failure_terminates_agentic_loop(tmp_path, workspace):
+    class ErrorRuntime(FakeRuntime):
+        async def stream(self, request: RuntimeRequest) -> AsyncIterator[RuntimeEvent]:
+            self.calls.append(request)
+            yield RuntimeEvent(
+                type="error",
+                request_id=request.request_id,
+                seq=0,
+                error_code="runtime_error",
+                error_message="backend crashed",
+            )
+
+    runtime = ErrorRuntime([_Scenario(text="should not run")])
+    orch = Orchestrator(runtime=runtime, app_root=tmp_path)
+    events = [e async for e in orch.run_agentic_turn(
+        _state(), workspace_dir=workspace, chat_id="c1", user_input="?",
+        requested_mode="interaction", prompt_provider=_provider(),
+    )]
+    fails = [e for e in events if e.event_name == "TurnFailed"]
+    assert len(fails) == 1
+    assert fails[0].error_code == "runtime_error"
+    assert len(runtime.calls) == 1
+
+
+@pytest.mark.asyncio
 async def test_approval_required_terminates_loop(tmp_path, workspace):
     runtime = FakeRuntime([
         _Scenario(tool_calls=[{
