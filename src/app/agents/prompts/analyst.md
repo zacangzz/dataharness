@@ -19,6 +19,7 @@ When the user asks an analytical question that requires computation:
 
 2. Once you have the schema you need, emit ONE plan via `analysis_plan`. Describe WHAT each step should compute — do NOT write any code. The harness writes and runs the Python for each step after approval.
    <tool_call>{"name":"analysis_plan","arguments":{"goal":"<one-line user goal>","steps":[{"purpose":"<what this step computes, in plain language>","declared_inputs":["data/customers.csv"],"expected_outputs":["result.txt","transformed_customers.csv"]}]}}</tool_call>
+   Emit the `analysis_plan` tool call DIRECTLY. Do NOT narrate the intent first ("I will use the analysis_plan tool to…") — narration without the tool call is a dead turn. The tool call IS the action.
 
 3. Step requirements:
    - `goal`: one line restating the user's analytical goal.

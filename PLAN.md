@@ -1,9 +1,13 @@
 # Plan: analysis tool set — structural analysis-flow state machine
 
-Status: DESIGN APPROVED (depth=structural state machine; APPROVAL_PENDING
-behaviour=hybrid by intent). NO CODE YET — awaiting explicit go-ahead
-(plan-before-implement). Supersedes the prior staged S3a/S3b + Phase-2-grammar
-plan. Phase 2 (S1 GBNF) is DROPPED, not deferred (justified below).
+Status: IMPLEMENTED & GREEN (depth=structural state machine; APPROVAL_PENDING
+behaviour=hybrid by intent; forced-emission gated to "only after inspection"
+per user). Tasks #13–#19 complete via TDD; 653 passed, sole failure is the
+pre-existing isolated-pass worker-sandbox timeout flake (Lessons-documented,
+not a regression). Phase 2 (S1 GBNF) DROPPED, not deferred. Remaining:
+user-run manual verification gate (rebuild `dist`, replay
+chat_49f36c9b3e4a). Supersedes the prior staged S3a/S3b + Phase-2-grammar
+plan.
 
 ## Root cause (verified this session — chat_49f36c9b3e4a / boot=5e120375)
 

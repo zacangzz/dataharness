@@ -45,6 +45,19 @@ Tool argument descriptors must support deterministic validation before handler e
   plain-language `FinalMessage` (never a silent dead turn).
   The command path (`plan_analysis`) is unchanged: code is supplied directly
   and gen-2 is NOT invoked.
+- Analysis flow state machine (Layer 3, per chat, persisted in
+  `state/analysis_flows.jsonl`): INSPECTING → PLAN_PENDING → APPROVAL_PENDING →
+  EXECUTING → DONE/FAILED. An in-flight flow makes the orchestrator override
+  the per-message routed mode to analyst (sticky) so follow-ups like
+  "ok proceed" / "show me the plan" cannot fall back to interaction and
+  hallucinate a plan. If the analyst narrates intent in prose instead of
+  emitting the `analysis_plan` tool call — but only after it inspected data or
+  signalled plan intent — the orchestrator FORCES one code-free `analysis_plan`
+  tool call (dedicated non-persisted generation, `stop=["</tool_call>"]`, one
+  bounded retry, else a loud `FinalMessage`). This is why a GBNF grammar is
+  unnecessary. While APPROVAL_PENDING: approve / reject / show-plan are handled
+  deterministically with NO model turn; any other input runs a grounded
+  analyst turn (stashed plan injected). The command path never creates a flow.
 - `analysis_request_execution`: re-emit approval for an existing pending plan step.
 - `analysis_inspect_artifact`: inspect analysis artifacts.
 - `analysis_inspect_provenance`: inspect lineage for analysis outputs.

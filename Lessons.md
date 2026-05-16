@@ -349,3 +349,38 @@ Last reviewed: 2026-05-14.
   can fail with `timeout` (vs `failed`) under full-suite load but passes in
   isolation — sandbox subprocess timing flake, not a regression. Re-run
   isolated before treating a worker-sandbox timeout as a real failure.
+- A weak analyst that narrates plan intent in prose ("I will use the
+  analysis_plan tool…") but emits NO `<tool_call>` is a distinct failure from
+  a malformed tool call: it reaches the end of `run_agentic_turn` with empty
+  `effective`, no `*_failed`, no handoff → the old silent `return` made the
+  prose the final answer and `analysis_plan` never dispatched (grep count 0,
+  `finish_reason=stop`, `iterations_done=2`). Prompt guidance alone does not
+  fix a weak model — the orchestrator must FORCE the call: dedicated
+  non-persisted gen, `stop=["</tool_call>"]`, re-append the stripped closing
+  tag, parse via `parse_tool_call_block`, one bounded retry, else a loud
+  `FinalMessage`. Tiny code-free JSON + stop + validate + retry makes a GBNF
+  grammar unnecessary (it would add ~0 once emission is forced).
+- L4 `AgentModeRouter` routes mode per-message from text only, and the TUI
+  holds ONE long-lived `RunStateRecord` passed by reference that the loop
+  never writes back — so "ok proceed" after an analyst turn routes to
+  interaction, where `analysis_plan` is unavailable and the model
+  hallucinates "I have generated the plan". Fix is L3-owned state, not L4
+  plumbing: an `AnalysisFlow` registry keyed by chat_id, persisted/replayed
+  exactly like `_pending_plans` (`analysis_flows.jsonl`, prune terminal/
+  dropped on replay). While a flow is non-terminal the loop overrides the
+  routed mode to analyst (sticky) and emits
+  `ModeHandoffAccepted(reason="analysis_flow_sticky")`.
+- Force a plan ONLY after the analyst actually inspected data
+  (`inspection_summary` set from a dispatched tool) OR narrated plan intent
+  (`_looks_like_plan_intent`). A bare `handoff_to_analyst` for a conceptual
+  question that the analyst answers in prose must NOT be converted into a
+  forced plan — gate it, else `test_handoff_reruns_under_target_mode`-style
+  Q&A breaks. Prose-only with no inspection/intent → drop the flow so mode
+  un-sticks; APPROVAL_PENDING/EXECUTING flows are never dropped by the
+  prose-release branch (a free-form grounded answer must not cancel a plan).
+- APPROVAL_PENDING handling is hybrid by intent: approve/reject/show-plan are
+  deterministic with NO model turn (a model turn here is exactly what
+  hallucinates "already ran it"); only genuinely free-form questions run a
+  model turn, with the stashed plan injected into the durable context for
+  grounding. Ambiguous input falls back to free-form (a grounded answer is
+  safer than an accidental approve).
