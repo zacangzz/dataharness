@@ -87,22 +87,33 @@ src/app/tui/screens/file_ingest.py      → app.tui.file_picker
 src/app/tui/screens/workspace_modal.py  → (none)
 
 src/harness/__init__.py                 → harness.app_store, harness.paths, harness.workspace
-src/harness/commands/__init__.py        → harness.commands.chat, harness.commands.diagnostics,
+src/harness/commands/__init__.py        → harness.commands.chat, harness.commands.compact,
+                                           harness.commands.diagnostics, harness.commands.doctor,
                                            harness.commands.memory, harness.commands.provenance,
                                            harness.commands.run, harness.commands.workspace
 src/harness/commands/chat.py            → harness.command_registry
+src/harness/commands/compact.py         → harness.command_registry
 src/harness/commands/diagnostics.py     → harness.command_registry
+src/harness/commands/doctor.py          → harness.command_registry
 src/harness/commands/memory.py          → harness.command_registry
 src/harness/commands/provenance.py      → harness.command_registry
 src/harness/commands/run.py             → harness.command_registry
 src/harness/commands/workspace.py       → harness.command_registry
+src/harness/services/__init__.py        → harness.services.analysis, harness.services.doctor,
+                                           harness.services.workspace_files
+src/harness/services/analysis.py        → harness.control, harness.events, worker.models,
+                                           worker.policy
+src/harness/services/doctor.py          → harness.events, harness.fingerprints,
+                                           harness.knowledge, harness.validity, runtime.types
+src/harness/services/workspace_files.py → harness.context
 src/harness/tools/__init__.py           → harness.tools.registry
-src/harness/tools/analysis.py           → harness.command_registry, harness.events, harness.tools.registry
+src/harness/tools/analysis.py           → harness.events, harness.tools.registry
 src/harness/tools/control.py            → harness.events, harness.tools.registry
-src/harness/tools/file.py              → harness.context, harness.events, harness.tools.registry
+src/harness/tools/file.py              → harness.events, harness.tools.registry
 src/harness/tools/knowledge.py          → harness.command_registry, harness.events,
                                            harness.knowledge_intents, harness.tools.registry
 src/harness/tools/registry.py          → re, harness.events
+src/harness/analysis_flow.py            → (none)
 src/harness/app_store.py                → (none)
 src/harness/approval.py                 → (none)
 src/harness/chat.py                     → harness.exceptions, runtime.types
@@ -111,22 +122,24 @@ src/harness/commands.py                 → harness.command_registry
 src/harness/context.py                  → (none)
 src/harness/control.py                  → (none)
 src/harness/db.py                       → (none)
-src/harness/doctor.py                   → harness.fingerprints, harness.validity
-src/harness/doctor_runner.py            → harness.doctor, harness.events, harness.knowledge, runtime.types
+src/harness/doctor.py                   → harness.services.doctor
+src/harness/doctor_runner.py            → harness.services.doctor
 src/harness/events.py                   → harness.status, runtime.types, worker.models
 src/harness/exceptions.py               → (none)
-src/harness/factory.py                  → harness.context, harness.db, harness.doctor,
-                                           harness.knowledge, harness.orchestrator,
-                                           harness.persistence, observability, runtime.protocol,
+src/harness/factory.py                  → harness.context, harness.db, harness.knowledge,
+                                           harness.orchestrator, harness.persistence,
+                                           harness.services.doctor, observability, runtime.protocol,
                                            worker.executor
 src/harness/fingerprints.py             → (none)
 src/harness/knowledge.py                → harness.control, harness.persistence
 src/harness/orchestrator.py             → harness.chat, harness.command_registry,
-                                           harness.commands.* (chat, diagnostics, memory,
-                                            provenance, run, workspace; imported lazily inside
+                                           harness.commands.* (chat, compact, diagnostics, doctor,
+                                            memory, provenance, run, workspace; imported lazily inside
                                             _register_commands), harness.context,
-                                           harness.control, harness.doctor, harness.doctor_runner,
-                                           harness.events, harness.exceptions, harness.knowledge,
+                                           harness.analysis_flow,
+                                           harness.control, harness.events, harness.exceptions,
+                                           harness.knowledge, harness.services.analysis,
+                                           harness.services.doctor, harness.services.workspace_files,
                                            harness.persistence,
                                            harness.state_machine, harness.status, harness.tools.analysis,
                                            harness.tools.control, harness.tools.file,
@@ -179,7 +192,7 @@ src/worker/sandbox_bootstrap.py         → (subprocess; no static src.* imports
 **Pydantic `BaseModel` subclasses** (ubiquitous data contracts):
 - runtime/types: `RuntimeMessage`, `RuntimeRequest`, `RuntimeEvent`, `TokenPressure`
 - runtime/config: `RuntimeConfig`
-- runtime/tool_calls: `ParsedToolCall`
+- runtime/tool_calls: `ParsedToolCall`; `extract_fenced_code` (gen-2 fenced ```` ```python ```` → code lines)
 - observability/events: `TelemetryEvent`
 - worker/models: `ResourceLimits`, `PermissionEnvelope`, `StepExecutionRequest`, `ExecutionEnvelope`, `StepTaskHandle`, `StepTaskStatus`, `StepExecutionEnvelope`
 - harness/app_store: `AppStore`
@@ -209,7 +222,7 @@ src/worker/sandbox_bootstrap.py         → (subprocess; no static src.* imports
 **Exception hierarchies:**
 - `HarnessError(Exception)` (harness/exceptions.py) ← `ChatNotFound`, `ChatWorkspaceMismatch`, `ChatActiveDeletionBlocked`, `WorkspaceNotFound`, `RunAlreadyActive`, `WorkspaceSwitchBlocked`
 - `ValueError` ← `ToolCallParseError` (runtime/tool_calls), `RuntimeInputError`/`ModelBehaviorError` (runtime/types), `WorkerPolicyError` (worker/policy), `InvalidTransition` (harness/state_machine)
-- `RuntimeError` ← `TmpCleanupBlocked` (harness/doctor)
+- `RuntimeError` ← `TmpCleanupBlocked` (harness/services/doctor)
 - `PermissionError` ← `MemoryWriteForbidden` (harness/knowledge)
 
 **StrEnum subclasses:**
@@ -242,9 +255,9 @@ src/worker/sandbox_bootstrap.py         → (subprocess; no static src.* imports
 ### Index C — Cross-file Call/Usage Map (selected hot paths)
 
 **`Orchestrator` (harness/orchestrator.py) is the hub:**
-- Builds: `ChatStore`, `ChatCompactor`, `RuntimeRequestBuilder` (chat.py); `Doctor`, `DoctorRunner` (doctor.py, doctor_runner.py); `ContextManager` (context.py); `HarnessStateMachine` (state_machine.py); `StatusBroker` (status.py); `AsyncWorkspaceManager` (workspace_async.py); `HarnessCommandRegistry` (command_registry.py); `HarnessToolRegistry` (tools/registry.py); `HarnessPersistence` (persistence.py); optional `KnowledgeManager` (knowledge.py)
-- Has `tool_registry: HarnessToolRegistry` (initialized in `__init__`); `_register_tools()` wires `file_read` via `make_file_read_handler`, the `CONTROL_TOOL_NAMES` (`family="control"`) via `make_control_handler`, the analysis family (`analysis_plan` + legacy `plan_analysis` alias, `analysis_request_execution`) via `make_analysis_plan_handler`/`make_analysis_request_execution_handler` (which delegate to the `plan_analysis`/`request_execution` command handlers), and the knowledge family (`knowledge_recall`, `knowledge_propose_update`) via `make_knowledge_recall_handler`/`make_knowledge_propose_update_handler`; `_read_workspace_file_for_tool()` delegates to module-level `_read_workspace_file`. `_dispatch_tool_call()` resolves handler/validate via `tool_registry` only (no `command_registry` fallback, no special-cased `KNOWLEDGE_INTENTS` bypass — that block was removed in the tools/commands split); control tools are catalog-only (the agentic loop `continue`s past terminal/handoff intents before dispatch)
-- Has `registry: HarnessCommandRegistry`; `_register_commands()` no longer holds inline descriptors — it lazily imports and delegates to family registrars in `harness.commands.*`: `register_diagnostics_commands` (doctor, compact, help), `register_chat_commands` (create/list/view/resume/delete_chat), `register_workspace_commands` (workspace + list_files/inspect_file/read_file), `register_run_commands` (plan_analysis, request_execution, cancel_run, stop_after_current_step, revise_goal, retry_step, rerun_step, mark_result_trusted/invalidated, challenge_conclusion), `register_memory_commands` (memory_review, recall_knowledge), `register_provenance_commands` (inspect_artifact, provenance_inspect, validity_inspect). Each registrar receives `(orchestrator, registry)` and wires descriptors to the unchanged `Orchestrator._handle_*` / `_make_*_handler` methods (still defined on the Orchestrator); descriptors and behaviour are byte-identical to the pre-split monolith
+- Builds: `ChatStore`, `ChatCompactor`, `RuntimeRequestBuilder` (chat.py); `Doctor`, `DoctorRunner` (services/doctor.py); `AnalysisService` (services/analysis.py); `WorkspaceFileService` (services/workspace_files.py); `ContextManager` (context.py); `HarnessStateMachine` (state_machine.py); `StatusBroker` (status.py); `AsyncWorkspaceManager` (workspace_async.py); `HarnessCommandRegistry` (command_registry.py); `HarnessToolRegistry` (tools/registry.py); `HarnessPersistence` (persistence.py); optional `KnowledgeManager` (knowledge.py)
+- Has `tool_registry: HarnessToolRegistry` (initialized in `__init__`); `_register_tools()` wires `file_read` via `make_file_read_handler` (delegating to `WorkspaceFileService`), the `CONTROL_TOOL_NAMES` (`family="control"`) via `make_control_handler`, the model-facing analysis family (`analysis_plan`, `analysis_request_execution`) via `make_analysis_plan_handler` / `make_analysis_request_execution_handler` (delegating to `AnalysisService`), and the model-facing knowledge family (`knowledge_recall`, `knowledge_propose_update`) via `make_knowledge_recall_handler`/`make_knowledge_propose_update_handler`. `_dispatch_tool_call()` resolves handler/validate via `tool_registry` only (no `command_registry` fallback, no legacy `plan_analysis` alias, no special-cased `KNOWLEDGE_INTENTS` bypass), builds `ToolContext(chat_id=<active chat_id>)`, and re-yields handler events
+- Has `registry: HarnessCommandRegistry`; `_register_commands()` no longer holds inline descriptors — it lazily imports and delegates to family registrars in `harness.commands.*`: `register_doctor_commands` (doctor), `register_compact_commands` (compact), `register_diagnostics_commands` (help), `register_chat_commands` (create/list/view/resume/delete_chat), `register_workspace_commands` (workspace + list_files/inspect_file/read_file), `register_run_commands` (plan_analysis, request_execution, cancel_run, stop_after_current_step, revise_goal, retry_step, rerun_step, mark_result_trusted/invalidated, challenge_conclusion), `register_memory_commands` (memory_review, recall_knowledge), `register_provenance_commands` (inspect_artifact, provenance_inspect, validity_inspect). Legacy names such as `plan_analysis`, `request_execution`, `workspace_status`, and `workspace_inventory` remain Layer-4/user commands only and are not model-callable tools
 - Yields: every `HarnessEvent` subclass from harness/events.py
 - Consumed by: `app.session.AppSession` (Layer 4 facade)
 
@@ -258,7 +271,7 @@ src/worker/sandbox_bootstrap.py         → (subprocess; no static src.* imports
 
 **`LlamaCppRuntime.stream` (runtime/llama_cpp_runtime.py)** uses:
 - `SyncToAsyncBridge` (runtime/bridge.py) to wrap blocking llama iterator
-- `parse_tool_call_block` / `repair_tool_call_block` (runtime/tool_calls.py) for tool extraction
+- `parse_tool_call_block` / `repair_tool_call_block` / `extract_fenced_code` (runtime/tool_calls.py) for tool extraction
 - Telemetry emit via `observability.Telemetry`
 - Implements `runtime.protocol.Runtime` (structural protocol)
 
@@ -268,7 +281,7 @@ src/worker/sandbox_bootstrap.py         → (subprocess; no static src.* imports
 - Path utilities: `build_step_tmp_dir`, `as_posix_workspace_relative` (worker/paths.py)
 - Used by `Orchestrator.resume_approved_step` (when wired) — currently invoked indirectly through code execution flow
 
-**`Doctor.run` / `DoctorRunner.run` (harness/doctor.py, harness/doctor_runner.py):**
+**`Doctor.run` / `DoctorRunner.run` (harness/services/doctor.py):**
 - Uses `lazy_fingerprint` (harness/fingerprints.py) → returns `FingerprintResult`
 - Uses `classify` + `ValidityState` (harness/validity.py)
 - Persists via `HarnessPersistence` (harness/persistence.py)
@@ -315,6 +328,7 @@ slash text or palette selection
   → AppSession.handle_direct_command
   → Orchestrator.handle_direct_command
   → EventConsumer.dispatch → DataHarnessApp._handle_command_* / command-specific handlers
+  → `/create_chat` success calls DataHarnessApp.activate_chat to select the new empty chat and refresh chat resources
 ```
 
 ### Index D — Symbol Definition Index (where to find a name)
@@ -327,7 +341,9 @@ slash text or palette selection
 | `LlamaCppRuntime` | `src/runtime/llama_cpp_runtime.py` |
 | `PythonStepExecutor` | `src/worker/executor.py` |
 | `WorkerPolicyValidator` | `src/worker/policy.py` |
-| `Doctor` / `DoctorRunner` | `src/harness/doctor.py`, `doctor_runner.py` |
+| `Doctor` / `DoctorRunner` | `src/harness/services/doctor.py` |
+| `AnalysisService` | `src/harness/services/analysis.py` |
+| `WorkspaceFileService` | `src/harness/services/workspace_files.py` |
 | `ChatStore` / `ChatCompactor` / `RuntimeRequestBuilder` | `src/harness/chat.py` |
 | `KnowledgeManager` | `src/harness/knowledge.py` |
 | `WorkspaceManager` (sync) | `src/harness/workspace.py` |
@@ -347,7 +363,9 @@ slash text or palette selection
 | `make_knowledge_recall_handler` | `src/harness/tools/knowledge.py` |
 | `make_knowledge_propose_update_handler` | `src/harness/tools/knowledge.py` |
 | `register_chat_commands` | `src/harness/commands/chat.py` |
+| `register_compact_commands` | `src/harness/commands/compact.py` |
 | `register_diagnostics_commands` | `src/harness/commands/diagnostics.py` |
+| `register_doctor_commands` | `src/harness/commands/doctor.py` |
 | `register_memory_commands` | `src/harness/commands/memory.py` |
 | `register_provenance_commands` | `src/harness/commands/provenance.py` |
 | `register_run_commands` | `src/harness/commands/run.py` |
@@ -524,8 +542,8 @@ Re-exports `PromptPackageRegistry`, `AgentModeRouter`.
 ### `src/app/agents/prompt_packages.py`
 **Imports:** `app.agents.types.PromptPackage`, `harness.tools.registry.HarnessToolRegistry`
 **Defines:**
-- **var** `MODE_INTENTS` — dict `mode → list[intent]`
-- **func** `_tool_catalog(mode, tool_registry) -> str` — markdown built from `tool_registry.list_tools()` (tool sigs) + mode intents
+- **var** `MODE_TOOL_NAMES` — dict `mode → registered model-facing tool names`
+- **func** `_tool_catalog(mode, tool_registry) -> str` — markdown built from `tool_registry.list_tools()` (tool sigs) + mode tool-name subset
 - **class** `PromptPackageRegistry`
   - `__init__(prompts_dir, *, tool_registry=None)`
   - `load(mode) -> PromptPackage` — loads `system.md`+`mode.md`+catalog+`response_format.md`, sha256 hash
@@ -534,14 +552,14 @@ Re-exports `PromptPackageRegistry`, `AgentModeRouter`.
 ### `src/app/agents/analyst.py`
 **Imports:** `app.agents.prompt_packages.PromptPackageRegistry`
 **Defines:**
-- **class** `AnalystMode` — `build_turn(user_text) -> dict` returning prompt package + intents
-**Notes:** allowed intents: `knowledge_lookup`, `plan_analysis`, `request_execution`, `inspect_artifacts`, `record_provenance`, `respond_to_user`, `record_gap`
+- **class** `AnalystMode` — `build_turn(user_text) -> dict` returning prompt package + model-facing tool names
+**Notes:** allowed tool names: `analysis_plan`, `analysis_request_execution`, `file_read`, `knowledge_recall`, `respond_to_user`
 
 ### `src/app/agents/knowledge.py`
 **Imports:** `app.agents.prompt_packages.PromptPackageRegistry`
 **Defines:**
 - **class** `KnowledgeMode` — `build_turn(user_text)`
-**Notes:** intents: `store_workspace_knowledge`, `update_preferences`, `record_gap`, `save_function_candidate`, `request_clarification`
+**Notes:** allowed tool names: `knowledge_recall`, `knowledge_propose_update`, `respond_to_user`, `request_clarification`
 
 ### `src/app/agents/interaction.py`
 **Imports:** `app.agents.prompt_packages.PromptPackageRegistry`
@@ -590,6 +608,7 @@ Marker.
   - `_handle_doctor_report_ready`, `_handle_doctor_narration_ready`, `_handle_doctor_approval_requested`, `_handle_doctor_actions_applied`
   - `_on_doctor_accept_all`, `_on_doctor_apply_selected`, `_on_doctor_reject_all` — schedule doctor action application through Textual workers
   - `_refresh_trace_widgets`
+  - `activate_chat(chat_id)` — sets active chat, rehydrates/clears transcript for that record, refreshes trace and sidebar resources
   - `apply_workspace_snapshot(snapshot)`
   - `_args_to_dict(spec, positional)`
   - `handle_command_palette_selection(descriptor)`
@@ -795,6 +814,7 @@ Re-exports `ApprovalScreen`, `ClarificationScreen` from `screens.py`.
 ### `src/app/tui/screens/chat_manager.py`
 **Defines:**
 - **class** `ChatManagerScreen(Screen)` — list/create chats; `compose`, `on_mount`, `refresh_list`, `on_button_pressed`, `text_buffer`
+**Internal calls:** `session.list_chats`, `session.create_chat`, `DataHarnessApp.activate_chat`
 **Notes:** unused in main app
 
 ### `src/app/tui/screens/command_palette.py`
@@ -869,7 +889,6 @@ Re-exports `AppStore`, `AppPaths`, `WorkspacePaths`, `ActiveWorkspace`, `Workspa
 - **class** `HarnessCommandRegistry`
   - `register(descriptor, handler, *, availability)`
   - `list_descriptors(ctx)`, `help(command)`, `validate(command, args)`, `get_handler(command)`
-  - `list_runtime_callable()` — prompt-safe tool-call descriptors, including `recall_knowledge`
 - **func** `parse_slash(text) -> tuple[str, list[str]]` — positional-only per spec §8
 
 ### `src/harness/commands.py`
@@ -881,6 +900,12 @@ Re-exports `HarnessCommandRegistry`.
   - `rebuild(*, workspace_dir, session_ledger, validity_states, chat_history) -> dict`
   - `compact(entries, *, active_plan_id, current_step_id, unresolved_failures) -> dict`
 **Notes:** loads `preferences.json` + all `memory/notes/*.md`
+
+### `src/harness/analysis_flow.py`
+**Defines (no internal imports; pydantic + stdlib only):**
+- **enum** `AnalysisPhase(StrEnum)` — inspecting/plan_pending/approval_pending/executing/done/failed
+- **class** `AnalysisFlow(BaseModel)` — Layer-3 per-chat analysis state (chat_id, run_id, workspace_id, phase, goal, plan_id, original_request, inspection_summary, force_attempts, timestamps); `is_terminal()`
+- Owned/persisted by `Orchestrator` (`_analysis_flows` dict + `state/analysis_flows.jsonl`, mirror of `_pending_plans`). Drives sticky-analyst override, prose-only→forced-plan emission (Gap A fix), hybrid APPROVAL_PENDING handling, and EXECUTING/DONE/FAILED wiring in `resume_approved_step`.
 
 ### `src/harness/control.py`
 **Defines (no internal imports):**
@@ -915,7 +940,30 @@ Re-exports `HarnessCommandRegistry`.
   - `list_records(table) -> list[dict]` — full table scan
 
 ### `src/harness/doctor.py`
-**Imports:** `harness.fingerprints.lazy_fingerprint`; `harness.validity.ValidityState, classify`
+**Imports:** `harness.services.doctor`
+**Defines:** compatibility re-exports for `Doctor`, `PROMOTION_TARGETS`, `TmpCleanupBlocked`
+**Notes:** canonical implementation lives in `src/harness/services/doctor.py`.
+
+### `src/harness/doctor_runner.py`
+**Imports:** `harness.services.doctor`
+**Defines:** compatibility re-exports for `DoctorRunner`, `PHASES`
+**Notes:** canonical implementation lives in `src/harness/services/doctor.py`.
+
+### `src/harness/services/analysis.py`
+**Imports:** `harness.control.{Plan, PlanStep, RunStateRecord, StepContract}`; `harness.events.{ApprovalRequired, CommandCompleted, CommandProgress, CommandStarted, HarnessEvent, PlanReady}`; `worker.models.PermissionEnvelope`; `worker.policy.WorkerPolicyValidator`
+**Defines:**
+- **var** `PLAN_ALLOWED_PACKAGES`
+- **func** `normalize_plan_step_code(idx, raw)` — normalizes legacy `code` or safer `code_lines`
+- **class** `AnalysisService`
+  - `build_plan_from_arguments(state, *, goal, steps)` — validates command-supplied analysis code and builds `Plan` + `StepContract` records
+  - `analysis_plan_events(...)` — command-path plan handling; code supplied directly, no gen-2
+  - `assemble_plan_events(...)` — model two-step path; code-free plan → gen-2 code synthesis via owner → validation/retry → final plan
+  - `analysis_request_execution_events(...)` — re-emits approval for an existing pending step
+  - `validate_generated_step(...)`, `finalize_plan(...)`
+**Notes:** transitional service receives the owning `Orchestrator` for stateful registries and generation helpers.
+
+### `src/harness/services/doctor.py`
+**Imports:** `harness.events.*`; `harness.fingerprints.lazy_fingerprint`; `harness.knowledge.KnowledgeManager`; `harness.validity.ValidityState, classify`; `runtime.types.{RuntimeMessage, RuntimeRequest}`
 **Defines:**
 - **var** `PROMOTION_TARGETS` — kind→workspace-relative path
 - **class** `TmpCleanupBlocked(RuntimeError)`
@@ -928,11 +976,6 @@ Re-exports `HarnessCommandRegistry`.
   - `run(workspace_dir, *, trigger_context, tmp_items, persistence, workspace_id, live_refs, promote_map)`
   - `apply_tmp_action(action_record, *, workspace_dir)` — unlink/rename + mark applied
   - `_discover_tmp_items`, `_persist`
-**Notes:** spec §6.12 — cleanup follows persisted `TmpAction`
-
-### `src/harness/doctor_runner.py`
-**Imports:** `harness.doctor.Doctor`; `harness.events.{CommandStarted, CommandProgress, CommandCompleted, DoctorActionProposed, DoctorFinding, DoctorReportReady, DoctorStarted, HarnessEvent}`; `harness.knowledge.KnowledgeManager`; `runtime.types.{RuntimeMessage, RuntimeRequest}`
-**Defines:**
 - **var** `PHASES` — scan_sources/review_validity/review_lineage/review_tmp/review_memory/assemble_recommendations
 - **class** `DoctorRunner`
   - `__init__(doctor, persistence, runtime, knowledge_manager, chat_store)`
@@ -941,6 +984,17 @@ Re-exports `HarnessCommandRegistry`.
   - `_classify_tmp_items(items)` — successful `step.py` → function promotion; failed step evidence → keep
   - `_read_step_result(path)`, `_event_action(action)`, `_category(phase)`
   - `_run_chat_knowledge_mining(...)`, `_run_script_assessment(...)`, `_run_consistency_check(...)` — runtime-backed semantic doctor phases
+**Notes:** spec §6.12 — cleanup follows persisted `TmpAction`.
+
+### `src/harness/services/workspace_files.py`
+**Imports:** `harness.context.{list_workspace_files, read_file_schema}`
+**Defines:**
+- **var** `READ_FILE_CHAR_CAP`
+- **class** `WorkspaceFileService`
+  - `list_files(workspace_dir)` — shared inventory wrapper
+  - `inspect_file(workspace_dir, rel_path)` — shared schema inspection with missing workspace/path errors
+  - `read_content(workspace_dir, rel_path, *, max_bytes, encoding)` — bounded workspace-relative text read with escape and binary guards
+**Notes:** shared by model-facing `file_read` and legacy file commands.
 
 ### `src/harness/events.py`
 **Imports:** `harness.status.HarnessStatusSnapshot`; `runtime.types.RuntimeStatus`; `worker.models.StepExecutionEnvelope, StepTaskStatus`
@@ -983,17 +1037,16 @@ Re-exports `HarnessCommandRegistry`.
 **Notes:** spec §6.13 + §10.8; reuse blocked unless source validity is `ok`/`revalidated`
 
 ### `src/harness/orchestrator.py`
-**Imports:** all of `harness.{chat, command_registry, context, control, doctor, doctor_runner, events, exceptions, persistence, state_machine, status, workspace_async}` plus `worker.{executor,models,policy}`
+**Imports:** `harness.{analysis_flow, chat, command_registry, context, control, events, exceptions, knowledge, persistence, state_machine, status, workspace_async}`; `harness.services.{analysis, doctor, workspace_files}`; `harness.tools.*`; `worker.{executor,models,policy}`
 **Defines:**
 - **func** `_sanitize_assistant_text(text)` — strips leaked assistant draft and Gemma turn markers before chat persistence
 - **func** `_summarize_step_execution(workspace_dir, envelope)` — status-aware final message for worker results/failures
 - **func** `_is_repairable_plan_analysis_error(message)` — classifies plan schema/field validation errors that merit one internal repair retry
 - **func** `_workspace_schema_snapshot(workspace_dir)` — compact JSON-lines schema context for plan repair prompts
-- **func** `_build_plan_analysis_repair_prompt(...)` — strict retry prompt for malformed `plan_analysis` tool calls
+- **func** `_build_plan_analysis_repair_prompt(...)` — strict retry prompt for invalid `analysis_plan` tool calls
 - **func** `_plan_analysis_no_code_message(validation_error)` — final no-code-ran user message after repeated invalid plans
-- **func** `_normalize_plan_step_code(idx, raw)` — normalizes `plan_analysis` step code from legacy `code` or safer `code_lines`
 - **func** `_apply_safe_action(km, workspace_dir, action)` — auto-apply safe doctor cleanup/promotion actions
-- **func** `_read_workspace_file(...)` — raw Layer-3 workspace text read with boundary and size caps
+- **func** `_read_workspace_file(...)` — compatibility wrapper delegating to `WorkspaceFileService.read_content`
 - **class** `Orchestrator`
   - `_register_commands` (built-ins: doctor, compact, help, cancel_run, memory_review, inspect_artifact, provenance_inspect, validity_inspect, mark_result_trusted, mark_result_invalidated, challenge_conclusion, stop_after_current_step, revise_goal, retry_step, rerun_step, chat ops, workspace ops). All Layer 3 commands now available; no stubs remain.
   - `_handle_doctor`, `_handle_compact`, `_handle_help`, `_handle_cancel_run`, `_handle_memory_review`, `_handle_recall_knowledge`, `_handle_inspect_artifact`, `_handle_provenance_inspect`, `_handle_validity_inspect`, `_handle_mark_result_trusted`, `_handle_mark_result_invalidated`, `_handle_challenge_conclusion`, `_handle_stop_after_current_step`, `_handle_revise_goal`, `_handle_retry_step`, `_handle_rerun_step`, `_handle_unavailable` (fallback)
@@ -1009,8 +1062,9 @@ Re-exports `HarnessCommandRegistry`.
   - **run lock:** `_acquire_run(run_id)` raises `RunAlreadyActive`; `_release_run`
   - **chat ops:** `create_chat`, `list_chats`, `view_chat`, `delete_chat`, `resume_chat`, `compact_chat_history`
   - **turn:** `run_turn(state, *, workspace_dir, chat_id, user_input, requested_mode, prompt_text, durable_context="") -> AsyncIterator[HarnessEvent]` — single-stream; emits `TurnPaused`/`TurnFailed(empty_output)` instead of hollow asg_ rows
-  - **agentic turn:** `run_agentic_turn(state, *, workspace_dir, chat_id, user_input, requested_mode, prompt_provider, max_iterations=4) -> AsyncIterator[HarnessEvent]` — bounded multi-iteration loop: build durable context → run_turn → dispatch tool_calls → handle handoffs/empty-output/malformed-tool/plan-repair retry → ApprovalRequired termination. Layer-3 owned per spec §6.3 / §8.1.
-  - **tool dispatch:** `_dispatch_tool_call(state, name, args) -> AsyncIterator[HarnessEvent]` — routes every name via `tool_registry.get_handler(name)`/`tool_registry.validate(name, args)` (tool-only; no `command_registry` fallback, no `KNOWLEDGE_INTENTS` bypass — knowledge writes now flow through the `knowledge_propose_update` tool handler which calls `knowledge_intents.handle_knowledge_intent`), builds a `ToolContext`; re-yields handler events
+  - **agentic turn:** `run_agentic_turn(state, *, workspace_dir, chat_id, user_input, requested_mode, prompt_provider, max_iterations=4) -> AsyncIterator[HarnessEvent]` — bounded multi-iteration loop: sticky-analyst override (in-flight `AnalysisFlow` forces analyst mode, emits `ModeHandoffAccepted(reason="analysis_flow_sticky")`) → ensure INSPECTING flow on analyst entry → APPROVAL_PENDING hybrid branch (deterministic approve/reject/show, free-form grounds the analyst turn) → build durable context → run_turn → dispatch tool_calls → handle handoffs/empty-output/malformed-tool/plan-repair retry → prose-only-in-analyst drives forced plan emission (Gap A) → ApprovalRequired termination. Layer-3 owned per spec §6.3 / §8.1.
+  - **analysis flow registry:** `_append_analysis_flow`/`_replay_analysis_flows` (prunes terminal/dropped), `_get_flow`/`_set_phase`/`_drop_flow`/`_ensure_inspecting_flow`/`_find_flow_by_plan`; `_force_plan_tool_call(state, *, flow, workspace_dir, chat_id, run_id, correction=None) -> dict|None` — dedicated non-persisted gen (`stop=["</tool_call>"]`) parsed via `runtime.tool_calls.parse_tool_call_block`, validates code-free `analysis_plan` args; `_classify_approval_intent`/`_looks_like_plan_intent`/`_summarize_inspection`/`_plan_brief` helpers
+  - **tool dispatch:** `_dispatch_tool_call(state, name, args, *, chat_id=None) -> AsyncIterator[HarnessEvent]` — routes every name via `tool_registry.get_handler(name)`/`tool_registry.validate(name, args)` (tool-only; no `command_registry` fallback, no `KNOWLEDGE_INTENTS` bypass — knowledge writes now flow through the `knowledge_propose_update` tool handler which calls `knowledge_intents.handle_knowledge_intent(run_id=ctx.run_id, ...)`), builds a `ToolContext`; re-yields handler events
   - **context block:** `_build_durable_context_block(workspace_id, workspace_dir, user_query="") -> str` — adds query-relevant memory notes
   - `close`, `cancel_run(run_id, reason) -> TurnCancelled`
   - **status:** `status_snapshot(workspace_id)`, `watch_status() -> AsyncIterator`
@@ -1018,8 +1072,10 @@ Re-exports `HarnessCommandRegistry`.
   - **execution resumption:** `resume_approved_step(...)`, `resume_with_clarification(...)`; successful worker completion starts a semantic doctor background pass
   - **artifact promotion:** `_promote_step_artifacts(workspace_dir, step_result_path, run_id) -> list[Path]` — copies successful step outputs from tmp/ to artifacts/ and memory/functions/
   - `prepare_worker_dispatch(plan, *, approval) -> dict` — validates code-exec approval
-  - `_build_plan_from_arguments(state, *, goal, steps) -> tuple[Plan, list[StepContract]]` — validates `plan_analysis` args and imports against worker policy; LLM owns code text via `code` or `code_lines`
-  - `_handle_plan_analysis(ctx, args)` / `_handle_request_execution(ctx, args)` — registered runtime-callable commands; emit PlanReady + ApprovalRequired
+  - `_build_plan_from_arguments(state, *, goal, steps) -> tuple[Plan, list[StepContract]]` — compatibility delegate to `AnalysisService.build_plan_from_arguments`
+  - `_generate_step_code(state, *, step, workspace_dir, correction=None) -> list[str]` — gen-2: internal, non-persisted runtime generation (`stop=["```"]`), parses fenced ```` ```python ```` via `runtime.tool_calls.extract_fenced_code`; schema-aware prompt (`_GEN2_SYSTEM_PROMPT`)
+  - `_assemble_plan_events(...)`, `_validate_generated_step(...)`, `_finalize_plan(...)`, `_analysis_plan_events(...)`, `_analysis_request_execution_events(...)` — compatibility delegates to `AnalysisService`
+  - `_handle_plan_analysis(ctx, args)` / `_handle_request_execution(ctx, args)` — command-only wrappers around `AnalysisService`; emit PlanReady + ApprovalRequired
   - `switch_workspace(state, *, new_workspace_id) -> RunStateRecord`
 **Notes:**
 - Single-active-run via `_acquire_run`/`_release_run`

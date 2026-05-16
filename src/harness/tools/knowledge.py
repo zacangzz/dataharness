@@ -1,7 +1,7 @@
 """Knowledge tool family (Layer 3).
 
-`knowledge_recall` bridges to the harness-owned `recall_knowledge`
-command handler. `knowledge_propose_update` maps an operation-based
+`knowledge_recall` bridges to the harness-owned recall service.
+`knowledge_propose_update` maps an operation-based
 tool call onto the existing `handle_knowledge_intent` dispatcher so
 memory writes stay harness-owned (spec §6.13, §3.4).
 """
@@ -26,20 +26,16 @@ _OPERATION_TO_INTENT = {
 
 
 def make_knowledge_recall_handler(orchestrator):
-    """Delegates to the existing `recall_knowledge` command handler."""
+    """Run model-facing knowledge recall."""
 
     async def handler(ctx: ToolContext, args: dict[str, Any]) -> AsyncIterator[HarnessEvent]:
-        from harness.command_registry import CommandContext
-
-        cmd_ctx = CommandContext(
+        async for ev in orchestrator._recall_knowledge_events(
             workspace_id=ctx.workspace_id,
             chat_id=ctx.chat_id,
             run_id=ctx.run_id,
-            has_pending_approval=ctx.has_pending_approval,
-            has_pending_clarification=ctx.has_pending_clarification,
-        )
-        recall_handler = orchestrator.registry.get_handler("recall_knowledge")
-        async for ev in recall_handler(cmd_ctx, args):
+            args=args,
+            event_command="knowledge_recall",
+        ):
             yield ev
 
     return handler
@@ -90,7 +86,9 @@ def make_knowledge_propose_update_handler(orchestrator):
         intent_args = {k: v for k, v in args.items() if k != "operation"}
         try:
             rec = handle_knowledge_intent(
-                manager, tool_call={"name": intent_name, "arguments": intent_args}
+                manager,
+                run_id=ctx.run_id or "",
+                tool_call={"name": intent_name, "arguments": intent_args},
             )
             payload = rec.model_dump(mode="json") if hasattr(rec, "model_dump") else str(rec)
             yield CommandCompleted(

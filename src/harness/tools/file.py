@@ -4,7 +4,6 @@ from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
 
-from harness.context import list_workspace_files, read_file_schema
 from harness.events import CommandCompleted, CommandStarted, HarnessEvent
 from harness.tools.registry import ToolContext
 
@@ -28,17 +27,17 @@ def make_file_read_handler(orchestrator: Any) -> Any:
         if not workspace_dir.exists():
             result: dict[str, Any] = {"error": "workspace not found"}
         elif operation == "list":
-            result = {"workspace_id": workspace_id, "files": list_workspace_files(workspace_dir)}
+            result = {
+                "workspace_id": workspace_id,
+                "files": orchestrator.workspace_file_service.list_files(workspace_dir),
+            }
         elif operation == "inspect":
-            if not path:
-                result = {"error": "missing required arg 'path'"}
-            else:
-                result = read_file_schema(workspace_dir, path)
+            result = orchestrator.workspace_file_service.inspect_file(workspace_dir, path)
         elif operation == "content":
             if not path:
                 result = {"error": "missing required arg 'path'"}
             else:
-                result = orchestrator._read_workspace_file_for_tool(
+                result = orchestrator.workspace_file_service.read_content(
                     workspace_dir,
                     path,
                     max_bytes=int(args.get("max_bytes") or 65536),

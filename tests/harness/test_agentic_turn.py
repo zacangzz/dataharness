@@ -25,10 +25,8 @@ from harness.orchestrator import Orchestrator
 from runtime.protocol import Runtime
 from runtime.types import RuntimeEvent, RuntimeRequest, RuntimeStatus, TokenPressure
 
-# Task 5 registered the analysis tool family in `Orchestrator.tool_registry`.
-# The legacy `plan_analysis` tool name is kept as a registry alias of
-# `analysis_plan`, so these tests (which script `plan_analysis` directly)
-# dispatch through the tool registry like any other tool.
+# The model-callable surface is the harness tool registry. Legacy command names
+# such as `plan_analysis` remain commands only and must not dispatch as tools.
 
 
 class _Scenario:
@@ -244,19 +242,20 @@ async def test_unhandled_turn_failure_terminates_agentic_loop(tmp_path, workspac
 
 @pytest.mark.asyncio
 async def test_approval_required_terminates_loop(tmp_path, workspace):
+    # Two-step: gen-1 emits a CODE-FREE plan; gen-2 supplies the code.
     runtime = FakeRuntime([
         _Scenario(tool_calls=[{
-            "name": "plan_analysis",
+            "name": "analysis_plan",
             "arguments": {
                 "goal": "count rows",
                 "steps": [{
-                    "purpose": "count",
-                    "code": "from pathlib import Path\nPath('result.txt').write_text('1')\nprint(1)",
-                    "declared_inputs": [],
+                    "purpose": "count rows in sales",
+                    "declared_inputs": ["data/sales.csv"],
                     "expected_outputs": ["result.txt"],
                 }],
             },
         }]),
+        _Scenario(text=_fenced(_GOOD_STEP_CODE)),
     ])
     orch = Orchestrator(runtime=runtime, app_root=tmp_path)
     events = [e async for e in orch.run_agentic_turn(
@@ -265,36 +264,37 @@ async def test_approval_required_terminates_loop(tmp_path, workspace):
     )]
     approvals = [e for e in events if isinstance(e, ApprovalRequired)]
     assert approvals
-    # Loop must terminate on approval — no second runtime call
-    assert len(runtime.calls) == 1
+    # gen-1 plan + one gen-2 code generation, then loop terminates on approval.
+    assert len(runtime.calls) == 2
 
 
 @pytest.mark.asyncio
 async def test_invalid_plan_analysis_is_repaired_once_internally(tmp_path, workspace):
+    # gen-1 emits a structurally bad plan (missing purpose) → one code-free
+    # shape-repair retry → valid plan → gen-2 → approval.
     runtime = FakeRuntime([
         _Scenario(tool_calls=[{
-            "name": "plan_analysis",
+            "name": "analysis_plan",
             "arguments": {
                 "goal": "add revenue per unit",
                 "steps": [{
-                    "code": "from pathlib import Path\nPath('result.txt').write_text('ok')",
                     "declared_inputs": ["data/sales.csv"],
                     "expected_outputs": ["result.txt"],
                 }],
             },
         }]),
         _Scenario(tool_calls=[{
-            "name": "plan_analysis",
+            "name": "analysis_plan",
             "arguments": {
                 "goal": "add revenue per unit",
                 "steps": [{
                     "purpose": "Add revenue_per_unit from existing columns.",
-                    "code": "from pathlib import Path\nPath('result.txt').write_text('ok')",
                     "declared_inputs": ["data/sales.csv"],
                     "expected_outputs": ["result.txt"],
                 }],
             },
         }]),
+        _Scenario(text=_fenced(_GOOD_STEP_CODE)),
     ])
     orch = Orchestrator(runtime=runtime, app_root=tmp_path)
     events = [e async for e in orch.run_agentic_turn(
@@ -305,57 +305,41 @@ async def test_invalid_plan_analysis_is_repaired_once_internally(tmp_path, works
 
     approvals = [e for e in events if isinstance(e, ApprovalRequired)]
     assert approvals
-    assert len(runtime.calls) == 2
+    assert len(runtime.calls) == 3  # gen-1 bad, gen-1 repaired, gen-2 code
     repair_prompt = runtime.calls[1].messages[-1].content
-    assert "STRICT PLAN_ANALYSIS REPAIR" in repair_prompt
-    assert '"code_lines":["import pandas as pd","from pathlib import Path"' in repair_prompt
+    assert "STRICT ANALYSIS_PLAN REPAIR" in repair_prompt
+    assert "Do NOT write code" in repair_prompt  # code-free repair shape
+    assert '"code_lines":["import pandas' not in repair_prompt  # old code example gone
     assert "add revenue_per_unit to @data/sales.csv" in repair_prompt
     assert "data/sales.csv" in repair_prompt
-    assert "derived column" in repair_prompt
-    assert "rolling calculation" in repair_prompt
 
 
 @pytest.mark.asyncio
-async def test_plan_analysis_repair_accepts_code_lines(tmp_path, workspace):
-    runtime = FakeRuntime([
-        _Scenario(tool_calls=[{
-            "name": "plan_analysis",
-            "arguments": {
-                "goal": "add revenue per unit",
-                "steps": [{
-                    "code": "from pathlib import Path\nPath('result.txt').write_text('ok')",
-                    "declared_inputs": ["data/sales.csv"],
-                    "expected_outputs": ["result.txt"],
-                }],
-            },
-        }]),
-        _Scenario(tool_calls=[{
-            "name": "plan_analysis",
-            "arguments": {
-                "goal": "add revenue per unit",
-                "steps": [{
-                    "purpose": "Add revenue_per_unit from existing columns.",
-                    "code_lines": [
-                        "from pathlib import Path",
-                        "Path('result.txt').write_text('ok')",
-                    ],
-                    "declared_inputs": ["data/sales.csv"],
-                    "expected_outputs": ["result.txt"],
-                }],
-            },
-        }]),
-    ])
+async def test_command_plan_analysis_keeps_supplied_code_no_gen2(tmp_path, workspace):
+    """Command path (`_analysis_plan_events`) is unchanged: it accepts code
+    supplied directly and must NOT invoke gen-2 (no runtime call)."""
+    runtime = FakeRuntime([])
     orch = Orchestrator(runtime=runtime, app_root=tmp_path)
-
-    events = [e async for e in orch.run_agentic_turn(
-        _state(), workspace_dir=workspace, chat_id="c1",
-        user_input="add revenue_per_unit to @data/sales.csv",
-        requested_mode="analyst", prompt_provider=_provider(),
+    events = [e async for e in orch._analysis_plan_events(
+        workspace_id="w_test", chat_id="c1", run_id="r1",
+        args={
+            "goal": "count rows",
+            "steps": [{
+                "purpose": "count",
+                "code_lines": [
+                    "from pathlib import Path",
+                    "Path('result.txt').write_text('1')",
+                    "print(1)",
+                ],
+                "declared_inputs": [],
+                "expected_outputs": ["result.txt"],
+            }],
+        },
+        event_command="plan_analysis",
     )]
-
-    approvals = [e for e in events if isinstance(e, ApprovalRequired)]
-    assert approvals
-    assert len(runtime.calls) == 2
+    assert any(e.event_name == "ApprovalRequired" for e in events)
+    assert any(e.event_name == "PlanReady" for e in events)
+    assert len(runtime.calls) == 0  # command path never runs gen-2
 
 
 @pytest.mark.asyncio
@@ -388,7 +372,7 @@ async def test_runtime_error_diagnostics_are_preserved_on_turn_failed(tmp_path, 
 @pytest.mark.asyncio
 async def test_repeated_invalid_plan_analysis_reports_no_code_ran(tmp_path, workspace):
     invalid_tool_call = {
-        "name": "plan_analysis",
+        "name": "analysis_plan",
         "arguments": {
             "goal": "add revenue per unit",
             "steps": [{
@@ -464,6 +448,112 @@ async def test_model_tool_call_cannot_dispatch_harness_command(tmp_path, workspa
     assert "unknown tool: doctor" in executed[0].result["error"]
 
 
+@pytest.mark.asyncio
+async def test_model_tool_call_cannot_dispatch_legacy_plan_analysis_command(tmp_path, workspace):
+    runtime = FakeRuntime([
+        _Scenario(tool_calls=[{
+            "name": "plan_analysis",
+            "arguments": {
+                "goal": "count rows",
+                "steps": [{
+                    "purpose": "count",
+                    "code_lines": [
+                        "from pathlib import Path",
+                        "Path('result.txt').write_text('1')",
+                        "print(1)",
+                    ],
+                    "declared_inputs": [],
+                    "expected_outputs": ["result.txt"],
+                }],
+            },
+        }]),
+        _Scenario(text="recovered"),
+    ])
+    orch = Orchestrator(runtime=runtime, app_root=tmp_path)
+
+    events = [e async for e in orch.run_agentic_turn(
+        _state(), workspace_dir=workspace, chat_id="chat_active",
+        user_input="count rows", requested_mode="analyst", prompt_provider=_provider(),
+    )]
+
+    executed = [e for e in events if isinstance(e, ToolCallExecuted)]
+    approvals = [e for e in events if isinstance(e, ApprovalRequired)]
+    assert not approvals
+    assert executed and executed[0].tool_name == "plan_analysis"
+    assert executed[0].result["error"] == "unknown tool: plan_analysis"
+
+
+@pytest.mark.asyncio
+async def test_analysis_tool_events_keep_active_chat_id(tmp_path, workspace):
+    runtime = FakeRuntime([
+        _Scenario(tool_calls=[{
+            "name": "analysis_plan",
+            "arguments": {
+                "goal": "count rows",
+                "steps": [{
+                    "purpose": "count rows in sales",
+                    "declared_inputs": ["data/sales.csv"],
+                    "expected_outputs": ["result.txt"],
+                }],
+            },
+        }]),
+        _Scenario(text=_fenced(_GOOD_STEP_CODE)),
+    ])
+    orch = Orchestrator(runtime=runtime, app_root=tmp_path)
+
+    events = [e async for e in orch.run_agentic_turn(
+        _state(), workspace_dir=workspace, chat_id="chat_active",
+        user_input="count rows", requested_mode="analyst", prompt_provider=_provider(),
+    )]
+
+    command_events = [e for e in events if isinstance(e, (CommandStarted, CommandCompleted))]
+    assert command_events
+    assert {event.chat_id for event in command_events} == {"chat_active"}
+
+
+@pytest.mark.asyncio
+async def test_knowledge_propose_update_creates_pending_proposal_with_run_id(tmp_path, workspace):
+    from harness.db import WorkspaceDb
+    from harness.knowledge import KnowledgeManager
+    from harness.persistence import HarnessPersistence
+
+    db = WorkspaceDb(tmp_path / "state" / "workspace.db")
+    db.connect()
+    persistence = HarnessPersistence(db)
+    knowledge_manager = KnowledgeManager(workspace_dir=workspace, persistence=persistence)
+    runtime = FakeRuntime([
+        _Scenario(tool_calls=[{
+            "name": "knowledge_propose_update",
+            "arguments": {
+                "operation": "note",
+                "title": "attrition",
+                "content": "Attrition is leavers / average headcount.",
+                "source_refs": ["chat:chat_active"],
+            },
+        }]),
+        _Scenario(text="recorded"),
+    ])
+    state = _state()
+    orch = Orchestrator(
+        runtime=runtime,
+        app_root=tmp_path,
+        persistence=persistence,
+        knowledge_manager=knowledge_manager,
+    )
+
+    events = [e async for e in orch.run_agentic_turn(
+        state, workspace_dir=workspace, chat_id="chat_active",
+        user_input="remember this", requested_mode="knowledge", prompt_provider=_provider(),
+    )]
+
+    executed = [e for e in events if isinstance(e, ToolCallExecuted)]
+    assert executed and executed[0].result["ok"] is True
+    records = persistence.db.list_records("memory_update_proposals")
+    assert len(records) == 1
+    assert records[0]["run_id"] == state.run_id
+    assert records[0]["status"] == "pending"
+
+
 def test_analysis_plan_is_registered_as_tool(tmp_path):
     orch = Orchestrator(app_root=tmp_path)
     tool_names = {d.name for d in orch.tool_registry.list_tools()}
@@ -471,10 +561,266 @@ def test_analysis_plan_is_registered_as_tool(tmp_path):
     assert "knowledge_recall" in tool_names
     assert "knowledge_propose_update" in tool_names
     assert "analysis_request_execution" in tool_names
-    # Legacy `plan_analysis` tool name kept as a registry alias.
-    assert "plan_analysis" in tool_names
+    assert "plan_analysis" not in tool_names
 
     # Old names remain available as harness commands.
     command_names = {d.name for d in orch.registry.help().commands}
     assert "plan_analysis" in command_names
     assert "recall_knowledge" in command_names
+
+
+@pytest.mark.asyncio
+async def test_valid_tool_call_survives_trailing_incomplete_structured_error(tmp_path, workspace):
+    """A valid tool_call followed by a truncated second block must still dispatch.
+
+    Models sometimes emit one complete <tool_call> then start a second that is
+    cut off at finish, producing an `incomplete_structured_content` error event.
+    The first, valid tool_call must not be discarded.
+    """
+
+    class TrailingErrorRuntime(FakeRuntime):
+        async def stream(self, request: RuntimeRequest) -> AsyncIterator[RuntimeEvent]:
+            self.calls.append(request)
+            if len(self.calls) == 1:
+                yield RuntimeEvent(
+                    type="tool_call", request_id=request.request_id, seq=0,
+                    tool_call={"name": "file_read", "arguments": {"operation": "list"}},
+                )
+                yield RuntimeEvent(
+                    type="error", request_id=request.request_id, seq=1,
+                    error_code="incomplete_structured_content",
+                    error_message='incomplete structured content at finish: <tool_call>{\n"name":"',
+                )
+                return
+            yield RuntimeEvent(
+                type="text_delta", request_id=request.request_id, seq=0,
+                text="you have data/sales.csv",
+            )
+            yield RuntimeEvent(
+                type="finish", request_id=request.request_id, seq=1,
+                finish_reason="stop", usage={},
+            )
+
+    runtime = TrailingErrorRuntime([])
+    orch = Orchestrator(runtime=runtime, app_root=tmp_path)
+    await orch.create_workspace("w_test")
+    real_ws = tmp_path / "workspaces" / "w_test"
+    (real_ws / "data").mkdir(parents=True, exist_ok=True)
+    (real_ws / "data" / "sales.csv").write_text("a,b\n1,2\n")
+
+    events = [e async for e in orch.run_agentic_turn(
+        _state(), workspace_dir=real_ws, chat_id="c1", user_input="what files?",
+        requested_mode="interaction", prompt_provider=_provider(),
+    )]
+
+    executed = [e for e in events if isinstance(e, ToolCallExecuted)]
+    finals = [e for e in events if e.event_name == "FinalMessage"]
+    fails = [e for e in events if e.event_name == "TurnFailed"]
+    assert executed and executed[0].tool_name == "file_read"
+    assert finals and "sales.csv" in finals[-1].text
+    # A usable tool_call was emitted; the truncated tail must not surface as a
+    # turn failure to the UI.
+    assert not fails, f"spurious TurnFailed surfaced: {[f.error_code for f in fails]}"
+
+
+@pytest.mark.asyncio
+async def test_incomplete_structured_content_classified_by_error_code_and_retried(tmp_path, workspace):
+    """`incomplete_structured_content` must be treated as recoverable via its
+    error_code, not by sniffing the failure_summary text."""
+
+    class TruncatedRuntime(FakeRuntime):
+        async def stream(self, request: RuntimeRequest) -> AsyncIterator[RuntimeEvent]:
+            self.calls.append(request)
+            if len(self.calls) == 1:
+                # No "tool_call"/"malformed" substring in the message: proves
+                # classification must use error_code, not text sniffing.
+                yield RuntimeEvent(
+                    type="error", request_id=request.request_id, seq=0,
+                    error_code="incomplete_structured_content",
+                    error_message="stream truncated mid structure",
+                )
+                return
+            yield RuntimeEvent(
+                type="text_delta", request_id=request.request_id, seq=0,
+                text="recovered after nudge",
+            )
+            yield RuntimeEvent(
+                type="finish", request_id=request.request_id, seq=1,
+                finish_reason="stop", usage={},
+            )
+
+    runtime = TruncatedRuntime([])
+    orch = Orchestrator(runtime=runtime, app_root=tmp_path)
+    events = [e async for e in orch.run_agentic_turn(
+        _state(), workspace_dir=workspace, chat_id="c1", user_input="?",
+        requested_mode="interaction", prompt_provider=_provider(),
+    )]
+
+    finals = [e for e in events if e.event_name == "FinalMessage"]
+    assert len(runtime.calls) == 2, "expected one repair retry"
+    assert finals and finals[-1].text == "recovered after nudge"
+
+
+@pytest.mark.asyncio
+async def test_exhausted_malformed_retry_yields_final_message(tmp_path, workspace):
+    """When the model keeps emitting malformed tool calls, the user must get an
+    explicit FinalMessage, not a silent dead turn."""
+
+    class AlwaysTruncatedRuntime(FakeRuntime):
+        async def stream(self, request: RuntimeRequest) -> AsyncIterator[RuntimeEvent]:
+            self.calls.append(request)
+            yield RuntimeEvent(
+                type="error", request_id=request.request_id, seq=0,
+                error_code="incomplete_structured_content",
+                error_message="stream truncated mid structure",
+            )
+
+    runtime = AlwaysTruncatedRuntime([])
+    orch = Orchestrator(runtime=runtime, app_root=tmp_path)
+    events = [e async for e in orch.run_agentic_turn(
+        _state(), workspace_dir=workspace, chat_id="c1", user_input="?",
+        requested_mode="interaction", prompt_provider=_provider(),
+    )]
+
+    finals = [e for e in events if e.event_name == "FinalMessage"]
+    assert finals, "exhausted malformed retry must surface a FinalMessage"
+    assert "tool" in finals[-1].text.lower()
+    assert len(runtime.calls) == 2, "one initial + one repair retry, then give up"
+
+
+@pytest.mark.asyncio
+async def test_generate_step_code_returns_fenced_code_lines(tmp_path, workspace):
+    """Gen-2: _generate_step_code runs an internal, non-persisted generation,
+    stops at the closing fence, and returns the fenced Python as code_lines.
+    The prompt must carry the step purpose + workspace schema."""
+    fenced = (
+        "Sure, here is the code:\n"
+        "```python\n"
+        "import pandas as pd\n"
+        'df = pd.read_csv("data/sales.csv")\n'
+        'Path("result.txt").write_text(str(len(df)))\n'
+        "print(len(df))\n"
+        "```\n"
+    )
+    runtime = FakeRuntime([_Scenario(text=fenced)])
+    orch = Orchestrator(runtime=runtime, app_root=tmp_path)
+    step = {
+        "purpose": "count rows in sales",
+        "declared_inputs": ["data/sales.csv"],
+        "expected_outputs": ["result.txt"],
+    }
+
+    code_lines = await orch._generate_step_code(
+        _state(), step=step, workspace_dir=workspace,
+    )
+
+    assert code_lines == [
+        "import pandas as pd",
+        'df = pd.read_csv("data/sales.csv")',
+        'Path("result.txt").write_text(str(len(df)))',
+        "print(len(df))",
+    ]
+    assert len(runtime.calls) == 1
+    req = runtime.calls[0]
+    assert req.stop == ["```"]
+    # standalone generation: only system+user, no chat history rows
+    assert [m.role for m in req.messages] == ["system", "user"]
+    prompt_text = "\n".join(m.content for m in req.messages)
+    assert "count rows in sales" in prompt_text
+    assert "data/sales.csv" in prompt_text  # schema snapshot + declared input
+    assert "result.txt" in prompt_text      # expected output named
+
+
+def _fenced(code: str) -> str:
+    return f"```python\n{code}\n```\n"
+
+
+_GOOD_STEP_CODE = (
+    "import pandas as pd\n"
+    "from pathlib import Path\n"
+    'df = pd.read_csv("data/sales.csv")\n'
+    'Path("result.txt").write_text(str(len(df)))\n'
+    "print(len(df))"
+)
+
+
+def _plan_args():
+    return {
+        "goal": "count rows",
+        "steps": [{
+            "purpose": "count rows in sales",
+            "declared_inputs": ["data/sales.csv"],
+            "expected_outputs": ["result.txt"],
+        }],
+    }
+
+
+@pytest.mark.asyncio
+async def test_assemble_plan_happy_path(tmp_path, workspace):
+    runtime = FakeRuntime([_Scenario(text=_fenced(_GOOD_STEP_CODE))])
+    orch = Orchestrator(runtime=runtime, app_root=tmp_path)
+    events = [e async for e in orch._assemble_plan_events(
+        workspace_id="w_test", chat_id="c1", run_id="r1",
+        args=_plan_args(), event_command="analysis_plan",
+    )]
+    names = [e.event_name for e in events]
+    assert names[0] == "CommandStarted"
+    progress = [e for e in events if e.event_name == "CommandProgress"]
+    assert len(progress) == 1
+    assert progress[0].phase_index == 1 and progress[0].phase_total == 1
+    assert "PlanReady" in names
+    approvals = [e for e in events if e.event_name == "ApprovalRequired"]
+    assert len(approvals) == 1  # single approval gate
+    completed = [e for e in events if e.event_name == "CommandCompleted"]
+    assert completed and completed[-1].result.get("plan_id")
+    assert len(runtime.calls) == 1  # one gen-2, no retry
+
+
+@pytest.mark.asyncio
+async def test_assemble_plan_retries_bad_gen2_once_then_recovers(tmp_path, workspace):
+    runtime = FakeRuntime([
+        _Scenario(text=_fenced("print(1)")),          # missing result.txt ref
+        _Scenario(text=_fenced(_GOOD_STEP_CODE)),     # corrected
+    ])
+    orch = Orchestrator(runtime=runtime, app_root=tmp_path)
+    events = [e async for e in orch._assemble_plan_events(
+        workspace_id="w_test", chat_id="c1", run_id="r1",
+        args=_plan_args(), event_command="analysis_plan",
+    )]
+    names = [e.event_name for e in events]
+    assert len(runtime.calls) == 2  # initial + one gen-2 retry
+    assert "PlanReady" in names
+    assert any(e.event_name == "ApprovalRequired" for e in events)
+    # correction must be fed back into the retry prompt
+    assert "rejected" in runtime.calls[1].messages[-1].content.lower()
+
+
+@pytest.mark.asyncio
+async def test_assemble_plan_exhausted_gen2_yields_error_no_approval(tmp_path, workspace):
+    runtime = FakeRuntime([
+        _Scenario(text=_fenced("print(1)")),
+        _Scenario(text=_fenced("print(2)")),
+    ])
+    orch = Orchestrator(runtime=runtime, app_root=tmp_path)
+    events = [e async for e in orch._assemble_plan_events(
+        workspace_id="w_test", chat_id="c1", run_id="r1",
+        args=_plan_args(), event_command="analysis_plan",
+    )]
+    assert len(runtime.calls) == 2  # one initial + one retry, then give up
+    assert not any(e.event_name == "ApprovalRequired" for e in events)
+    completed = [e for e in events if e.event_name == "CommandCompleted"]
+    assert completed and "after one retry" in completed[-1].result.get("error", "")
+
+
+@pytest.mark.asyncio
+async def test_assemble_plan_shape_error_skips_gen2(tmp_path, workspace):
+    runtime = FakeRuntime([])
+    orch = Orchestrator(runtime=runtime, app_root=tmp_path)
+    events = [e async for e in orch._assemble_plan_events(
+        workspace_id="w_test", chat_id="c1", run_id="r1",
+        args={"goal": "g", "steps": []}, event_command="analysis_plan",
+    )]
+    assert len(runtime.calls) == 0  # no gen-2 when plan shape invalid
+    completed = [e for e in events if e.event_name == "CommandCompleted"]
+    assert completed and "steps" in completed[-1].result.get("error", "")
+    assert not any(e.event_name == "ApprovalRequired" for e in events)

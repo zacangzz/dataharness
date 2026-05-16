@@ -10,16 +10,17 @@ class FakeKnowledgeManager:
     def propose_update(
         self,
         *,
+        run_id: str,
         memory_target: str,
         source_refs: list[str],
         proposed_content: str,
-        conflicts: list[str] | None = None,
     ):
         proposal = {
+            "run_id": run_id,
             "memory_target": memory_target,
             "source_refs": source_refs,
             "proposed_content": proposed_content,
-            "conflicts": conflicts or [],
+            "conflicts": [],
             "status": "pending",
         }
         self.proposals.append(proposal)
@@ -30,6 +31,7 @@ def test_store_workspace_knowledge_intent_creates_pending_proposal_to_notes() ->
     manager = FakeKnowledgeManager()
     handle_knowledge_intent(
         manager,
+        run_id="run_1",
         tool_call={
             "name": "store_workspace_knowledge",
             "arguments": {
@@ -47,6 +49,7 @@ def test_update_preferences_intent_targets_preferences_file() -> None:
     manager = FakeKnowledgeManager()
     handle_knowledge_intent(
         manager,
+        run_id="run_1",
         tool_call={
             "name": "update_preferences",
             "arguments": {"key": "style", "value": "concise", "source_refs": ["turn:r_1"]},
@@ -59,6 +62,7 @@ def test_record_gap_intent_targets_memory_notes_gaps() -> None:
     manager = FakeKnowledgeManager()
     handle_knowledge_intent(
         manager,
+        run_id="run_1",
         tool_call={
             "name": "record_gap",
             "arguments": {"description": "missing department mapping", "source_refs": ["turn:r_1"]},
@@ -71,6 +75,7 @@ def test_save_function_candidate_intent_targets_memory_functions() -> None:
     manager = FakeKnowledgeManager()
     handle_knowledge_intent(
         manager,
+        run_id="run_1",
         tool_call={
             "name": "save_function_candidate",
             "arguments": {
@@ -86,4 +91,8 @@ def test_save_function_candidate_intent_targets_memory_functions() -> None:
 
 def test_unknown_intent_raises_so_caller_can_record_failure() -> None:
     with pytest.raises(ValueError, match="unknown knowledge intent"):
-        handle_knowledge_intent(FakeKnowledgeManager(), tool_call={"name": "bogus", "arguments": {}})
+        handle_knowledge_intent(
+            FakeKnowledgeManager(),
+            run_id="run_1",
+            tool_call={"name": "bogus", "arguments": {}},
+        )

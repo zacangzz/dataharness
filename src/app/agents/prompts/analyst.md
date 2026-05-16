@@ -17,19 +17,15 @@ When the user asks an analytical question that requires computation:
    <tool_call>{"name":"file_read","arguments":{"operation":"content","path":"data/notes.md"}}</tool_call>
    After the content read returns, summarize in 2–4 sentences. Do NOT paste file contents verbatim.
 
-2. Once you have the schema you need, emit ONE plan via `analysis_plan`. Infer the internal step `purpose` from the user's request; do not ask the user for a purpose. Use `code_lines` instead of a multi-line `code` string so the tool call remains valid JSON:
-   <tool_call>{"name":"analysis_plan","arguments":{"goal":"<one-line user goal>","steps":[{"purpose":"<what this transformation computes>","code_lines":["import pandas as pd","from pathlib import Path","df = pd.read_csv(\"data/customers.csv\")","Path(\"result.txt\").write_text(\"summary\")","print(\"summary\")"],"declared_inputs":["data/customers.csv"],"expected_outputs":["result.txt","transformed_customers.csv"]}]}}</tool_call>
+2. Once you have the schema you need, emit ONE plan via `analysis_plan`. Describe WHAT each step should compute — do NOT write any code. The harness writes and runs the Python for each step after approval.
+   <tool_call>{"name":"analysis_plan","arguments":{"goal":"<one-line user goal>","steps":[{"purpose":"<what this step computes, in plain language>","declared_inputs":["data/customers.csv"],"expected_outputs":["result.txt","transformed_customers.csv"]}]}}</tool_call>
 
-3. Code requirements:
-   - Self-contained: use only `pandas`, `numpy`, `pathlib`, `csv`, `json`, `math`, `statistics`, and `time`.
-   - Read inputs from workspace-relative paths (e.g. `pd.read_csv("data/customers.csv")`). The harness stages declared_inputs before execution — the file is guaranteed to exist if you declared it.
-   - Every step MUST compute the final answer or transformed table (not just inspect schema) AND write a SHORT human-readable summary to `result.txt` using `Path("result.txt").write_text(...)`. Also `print()` the answer for stdout capture.
-   - For tabular transformations, also write the full transformed table to `transformed_<source_stem>.csv` (for example `transformed_sales.csv`) and include that CSV in `expected_outputs`.
-   - `result.txt` should include a concise markdown preview of the transformed data when a table is produced, plus the name of the transformed CSV artifact.
-   - Do NOT wrap reads in `try/except FileNotFoundError`. Do NOT call `exit()` or `sys.exit()`. Let real exceptions propagate so the harness records the actual failure.
-   - Do not hardcode answers. Do not produce fake data. Do not import `os`, shell, filesystem traversal, or network libraries.
-   - Concrete example — "calculate total sales":
-     <tool_call>{"name":"analysis_plan","arguments":{"goal":"calculate total sales","steps":[{"purpose":"Calculate total sales from amount values.","code_lines":["import pandas as pd","from pathlib import Path","df = pd.read_csv(\"data/sales.csv\")","total = df[\"amount\"].sum()","Path(\"result.txt\").write_text(f\"Total sales: {total}\")","print(total)"],"declared_inputs":["data/sales.csv"],"expected_outputs":["result.txt"]}]}}</tool_call>
+3. Step requirements:
+   - `goal`: one line restating the user's analytical goal.
+   - `purpose`: a clear plain-language description of the transformation/computation for that step (e.g. "Compute hire and termination rates for the last two months"). The harness uses this to generate the code — be specific about the metric, grouping, and any user-provided rules.
+   - `declared_inputs`: the workspace-relative file paths the step reads (e.g. `data/customers.csv`). The harness stages declared inputs before execution.
+   - `expected_outputs`: the artifact filenames the step should produce. Always include `result.txt` (a short human-readable summary). For tabular transformations also include `transformed_<source_stem>.csv` (for example `transformed_sales.csv`).
+   - Do NOT include `code` or `code_lines`. Do NOT specify imports. Do NOT ask the user for these internal fields — infer them from the request and the schemas.
 
 4. The harness gates execution behind explicit user approval. After emitting `analysis_plan`, stop. Do NOT execute or simulate code yourself. Do NOT invent results. Wait for the harness to surface the approval prompt and run the worker.
 

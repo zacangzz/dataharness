@@ -27,6 +27,9 @@ Last reviewed: 2026-05-14.
   write paths under `memory/`.
 - Commands that implicitly target UI state, such as `/compact`, need Layer 4 to
   inject the active `chat_id` before calling `handle_direct_command`.
+- Chat-creation commands need Layer 4 to apply successful Layer 3 results to
+  active UI state: select the new chat, clear or refresh the transcript, and
+  refresh chat resources.
 - Command context metadata must be preserved before command-argument validation.
   `HarnessCommandRegistry.validate()` intentionally strips undeclared user-facing
   args, so hidden context fields such as `chat_id` must be read from raw
@@ -121,13 +124,20 @@ Last reviewed: 2026-05-14.
 
 ## Planning, Approval, And Execution
 
-- Plans originate from L1 as a `plan_analysis` tool call, not from keyword
-  triggers in harness code. The model supplies the code; Layer 3 validates and
-  packages; Layer 4 asks approval; Layer 2 executes approved code.
-- `plan_analysis` must validate early: non-empty goal and steps, relative input
+- Plans originate from the registered `analysis_plan` tool call, not from keyword
+  triggers in harness code or legacy command names. The runtime only parses
+  structured tool calls; Layer 3 validates names against `HarnessToolRegistry`,
+  packages the plan, Layer 4 asks approval, and Layer 2 executes approved code.
+- The tools/commands/services split has three separate boundaries: model calls
+  go through `HarnessToolRegistry`, user/app commands go through
+  `HarnessCommandRegistry`, and reusable Layer 3 implementation belongs in
+  `src/harness/services/`. Compatibility shims may remain briefly, but new code
+  should import canonical service owners directly.
+- `analysis_plan` must validate early: non-empty goal and steps, relative input
   paths, allowed imports using the worker policy, and expected output filenames
-  referenced by submitted code before `ApprovalRequired` is emitted.
-- Prefer `code_lines` for model-generated `plan_analysis` Python. Embedding
+  referenced by submitted code before `ApprovalRequired` is emitted. The legacy
+  `plan_analysis` name remains a command only.
+- Prefer `code_lines` for model-generated `analysis_plan` Python. Embedding
   multi-line code in a JSON `code` string is fragile with local models and can
   fail before Layer 3 validation sees the plan.
 - Do not add broad imports such as `os` to the worker allowlist just because the
@@ -286,6 +296,8 @@ Last reviewed: 2026-05-14.
   runtime parser tests for stream handling, harness tests for plan/tool
   semantics, worker tests for sandbox and artifact behavior, and Textual pilot
   tests for UI workflows.
+- Under zsh, single-quote `rg` patterns that contain markdown backticks; double
+  quotes can execute command substitution before `rg` sees the pattern.
 - For package-sensitive fixes, verify both source and frozen paths when
   practical. Source tests passing does not prove the current `dist/` binary has
   the fix.
@@ -294,3 +306,46 @@ Last reviewed: 2026-05-14.
 - Specs are aspirational until code and tests prove the behavior. Check the
   implementation before relying on a spec statement such as doctor tmp-script
   promotion or packaged behavior.
+- A model may emit one valid `<tool_call>` then a truncated second block. In
+  `run_turn`, a runtime `error` event with code `parse_error` or
+  `incomplete_structured_content` must NOT fail the turn when
+  `collected_tool_calls` is non-empty — break and fall through to
+  `awaiting_tool_dispatch` so the valid call still dispatches.
+- Classify recoverable LLM failures by `TurnFailed.error_code`
+  (`parse_error`, `incomplete_structured_content`, `malformed_tool_call`), not
+  by substring-sniffing `failure_summary`. Text sniffing breaks when the
+  message lacks "tool_call"/"malformed" (e.g. "stream truncated").
+- After the single malformed-tool repair nudge is spent, `run_agentic_turn`
+  must yield an explicit `FinalMessage` (plain-language guidance), never a
+  bare `return` — a silent dead turn leaves the user with no output.
+- `_escape_control_chars_in_strings` only rescues literal control chars, not a
+  stray unescaped `"` that prematurely closes a JSON string (e.g. mis-escaped
+  `code_lines` f-string `...%\n\""`). Mitigate via prompt guidance: one
+  statement per `code_lines` entry, no `\n` inside literals, single quotes
+  inside f-strings.
+- A weak quantized model emits a COMPLETE `<tool_call>…</tool_call>` pair but
+  invalid JSON when the payload is large Python-in-JSON. Diagnose via
+  `dist/.../runtime.log`: `finish_reason=unknown` (NOT `length`) rules out a
+  token-budget truncation; `event_from_tool_call_text` only fires when the
+  closing tag is present, so a `parse_error` there means the model's own JSON
+  is broken, not a stream cutoff. Prompt band-aids do not fix this — remove
+  code from the JSON entirely.
+- `analysis_plan` model path is two-step: gen-1 emits a CODE-FREE plan
+  (`{goal, steps:[{purpose, declared_inputs, expected_outputs}]}`); gen-2
+  (`_generate_step_code`) is an internal, non-persisted runtime generation
+  with `stop=["```"]` that returns fenced ```` ```python ```` via
+  `extract_fenced_code` — no JSON escaping burden. Per step: validate
+  generated code (reuse `_build_plan_from_arguments` via
+  `_validate_generated_step`) with ONE bounded gen-2 retry, then a SINGLE
+  approval. The command path (`_analysis_plan_events`/`plan_analysis`) is
+  unchanged: code supplied directly, gen-2 NOT invoked.
+- Two-step needs a split repair: gen-1 plan-SHAPE errors use the (now
+  code-free) `_build_plan_analysis_repair_prompt`; per-step gen-2 code
+  failures retry gen-2 only. Keep `_is_repairable_plan_analysis_error`
+  matching both (added `"code generation failed"`); exhausted → `FinalMessage`
+  (never silent). Share the build tail via `_finalize_plan` so command and
+  model paths cannot drift.
+- `tests/worker/test_executor.py::test_executor_blocks_dynamic_import_of_disallowed_package`
+  can fail with `timeout` (vs `failed`) under full-suite load but passes in
+  isolation — sandbox subprocess timing flake, not a regression. Re-run
+  isolated before treating a worker-sandbox timeout as a real failure.

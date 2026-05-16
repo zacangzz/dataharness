@@ -465,6 +465,18 @@ class DataHarnessApp(App[None]):
     def _handle_command_completed(self, event) -> None:
         self._trace.command_completed(event.command, event.result)
         self.query_one("#sidebar", SidebarPane).command_completed(event.command, event.result)
+        if (
+            event.command == "create_chat"
+            and isinstance(event.result, dict)
+            and "error" not in event.result
+        ):
+            chat = event.result.get("chat")
+            chat_id = chat.get("chat_id") if isinstance(chat, dict) else None
+            if chat_id:
+                self._active_chat_id = chat_id
+                self._refresh_trace_widgets()
+                self.run_worker(self.activate_chat(chat_id))
+                return
         snapshot = event.result.get("snapshot") if isinstance(event.result, dict) else None
         if snapshot:
             self.apply_workspace_snapshot(snapshot)
@@ -560,6 +572,12 @@ class DataHarnessApp(App[None]):
         except Exception:
             return
         pane.rehydrate_from_record(record)
+
+    async def activate_chat(self, chat_id: str) -> None:
+        self._active_chat_id = chat_id
+        await self._rehydrate_active_chat()
+        self._refresh_trace_widgets()
+        await self._refresh_sidebar_resources()
 
     def apply_workspace_snapshot(self, snapshot) -> None:
         if not isinstance(snapshot, dict):

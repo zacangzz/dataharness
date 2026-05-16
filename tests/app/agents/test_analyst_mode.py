@@ -12,5 +12,6 @@ def test_analyst_mode_builds_prompt_turn_with_harness_intents(tmp_path: Path) ->
     mode = AnalystMode(PromptPackageRegistry(prompts_dir))
     result = mode.build_turn("calculate attrition rate")
     assert result["package"].mode == "analyst"
-    assert "plan_analysis" in result["allowed_harness_intents"]
-    assert "inspect_artifacts" in result["allowed_harness_intents"]
+    assert "analysis_plan" in result["allowed_harness_intents"]
+    assert "analysis_request_execution" in result["allowed_harness_intents"]
+    assert "plan_analysis" not in result["allowed_harness_intents"]

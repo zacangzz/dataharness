@@ -16,6 +16,7 @@ Issue with risk averse companies: extremely slow and overzealous protection agai
 - improve conversational capabilities
 - improve UI/UX
 - fix: /compact, /doctor
+- add model download at load time
 
 ## What did I learn from this experience?
 

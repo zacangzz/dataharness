@@ -13,7 +13,7 @@ Each Layer is completely separate and independent, it is it's own standalone lay
 - When adding Python packages, update `pyproject.toml`; do not manually edit `uv.lock`.
 - Do not edit any Python uv envrionments directly for e.g. do not edit `.venv`.
 - Remember to update `.spec` file for items to include while packaging, this can include tcss (Textual) or md file from prompts/, and also update `.toml` file for necessary packages for app run time.
-- Avoid git commit and do not git commit without permission.
+- Avoid git commit and do not git commit without permission especially on main. Use a worktree to iterate separately. Once done, merge the final back into main as 1 merge (drop history)
 - Specs should be light on code, be readable and clear, specifically explicit about app rules and behaviour.
 - Plans should be clear and detailed and ensure that it clearly meets Spec requirements.
 - As much as possible, keep logic where it belong in each app Layer and do not allow logic to cross over Layer. Shared functions should be made available between Layer.

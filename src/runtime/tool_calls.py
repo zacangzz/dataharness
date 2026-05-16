@@ -105,6 +105,29 @@ def parse_tool_call_block(text: str) -> ParsedToolCall:
     return ParsedToolCall(name=normalized["name"], arguments=normalized["arguments"])
 
 
+def extract_fenced_code(text: str) -> list[str]:
+    """Extract lines from the first ``` fenced block.
+
+    Tolerates a missing closing fence (gen-2 uses ``stop=["```"]`` so the
+    runtime consumes it). Drops the optional info/language line and trailing
+    blank lines. Returns ``[]`` when no fence is present.
+    """
+    open_idx = text.find("```")
+    if open_idx == -1:
+        return []
+    nl = text.find("\n", open_idx + 3)
+    if nl == -1:
+        return []
+    body = text[nl + 1:]
+    close_idx = body.find("```")
+    if close_idx != -1:
+        body = body[:close_idx]
+    lines = body.split("\n")
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return lines
+
+
 def repair_tool_call_block(text: str) -> str:
     payload = _match_and_parse(text)
     normalized = _normalize_payload(payload)

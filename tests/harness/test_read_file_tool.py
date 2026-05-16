@@ -4,8 +4,12 @@ enforces byte/char caps, detects binary."""
 import pytest
 
 from harness.command_registry import CommandContext
-from harness.control import RunStateRecord
-from harness.orchestrator import Orchestrator, _read_workspace_file
+from harness.orchestrator import Orchestrator
+from harness.services.workspace_files import WorkspaceFileService
+
+
+def _read_workspace_file(wd, rel_path, **kwargs):
+    return WorkspaceFileService().read_content(wd, rel_path, **kwargs)
 
 
 def _ws(tmp_path):
@@ -73,3 +77,16 @@ async def test_read_file_dispatched_via_registry(orch, tmp_path):
     events = [ev async for ev in handler(ctx, {"path": "x.txt"})]
     completed = next(e for e in events if e.event_name == "CommandCompleted")
     assert completed.result["content"] == "dispatched"
+
+
+async def test_read_file_command_reports_missing_workspace(orch):
+    handler = orch.registry.get_handler("read_file")
+    ctx = CommandContext(
+        workspace_id="missing", chat_id=None, run_id=None,
+        has_pending_approval=False, has_pending_clarification=False,
+    )
+
+    events = [ev async for ev in handler(ctx, {"path": "x.txt"})]
+
+    completed = next(e for e in events if e.event_name == "CommandCompleted")
+    assert completed.result == {"error": "workspace not found"}

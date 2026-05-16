@@ -7,26 +7,25 @@ from app.agents.types import PromptPackage
 from harness.tools.registry import HarnessToolRegistry
 
 
-MODE_INTENTS = {
+MODE_TOOL_NAMES = {
     "interaction": [
         "answer_directly",
+        "file_read",
         "handoff_to_analyst",
         "handoff_to_knowledge",
         "request_clarification",
     ],
     "analyst": [
-        "knowledge_lookup",
-        "plan_analysis",
-        "request_execution",
-        "inspect_artifacts",
-        "record_provenance",
+        "analysis_plan",
+        "analysis_request_execution",
+        "file_read",
+        "knowledge_recall",
         "respond_to_user",
     ],
     "knowledge": [
-        "store_workspace_knowledge",
-        "update_preferences",
-        "record_gap",
-        "save_function_candidate",
+        "knowledge_recall",
+        "knowledge_propose_update",
+        "respond_to_user",
     ],
     "clarification": [
         "request_clarification",
@@ -47,16 +46,19 @@ def _tool_catalog(mode: str, tool_registry: HarnessToolRegistry | None) -> str:
             args_str = ", ".join(args_parts)
             lines.append(f"- `{desc.name}({args_str})` — {desc.short_description}")
         tool_lines = "\n".join(lines) or "- (no harness tools available)"
-    intents = MODE_INTENTS.get(mode, [])
-    intent_lines = "\n".join(f"- `{intent}`" for intent in intents)
+    tool_names = MODE_TOOL_NAMES.get(mode, [])
+    if tool_registry is not None:
+        registered_names = {desc.name for desc in tool_registry.list_tools()}
+        tool_names = [name for name in tool_names if name in registered_names]
+    allowed_lines = "\n".join(f"- `{name}`" for name in tool_names) or "- (no mode-specific tools)"
     return "\n".join(
         [
             "Available harness tool calls:",
             "These are the only exposed harness tool names. Do not invent tool names.",
             tool_lines,
             "",
-            f"Allowed {mode} intents:",
-            intent_lines,
+            f"Allowed {mode} tool names:",
+            allowed_lines,
             "",
             "Tool call format (one per emission):",
             '<tool_call>{"name":"file_read","arguments":{"operation":"list"}}</tool_call>',

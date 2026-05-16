@@ -31,7 +31,7 @@ from app.tui.widgets import (
 HOSTILE = (
     "validation error: [type=value_error, input_value={'id': 'plan_1', "
     "'steps': [{'purpose': 'x'}]}, input_type=dict]\n"
-    "<tool_call>{\"name\":\"plan_analysis\",\"arguments\":{}}</tool_call>"
+    "<tool_call>{\"name\":\"analysis_plan\",\"arguments\":{}}</tool_call>"
 )
 
 

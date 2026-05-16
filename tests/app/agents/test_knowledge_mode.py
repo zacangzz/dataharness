@@ -12,5 +12,6 @@ def test_knowledge_mode_builds_prompt_turn_for_memory_capture(tmp_path: Path) ->
     mode = KnowledgeMode(PromptPackageRegistry(prompts_dir))
     result = mode.build_turn("remember that attrition = total leavers / average headcount")
     assert result["package"].mode == "knowledge"
-    assert "store_workspace_knowledge" in result["allowed_harness_intents"]
-    assert "save_function_candidate" in result["allowed_harness_intents"]
+    assert "knowledge_recall" in result["allowed_harness_intents"]
+    assert "knowledge_propose_update" in result["allowed_harness_intents"]
+    assert "store_workspace_knowledge" not in result["allowed_harness_intents"]

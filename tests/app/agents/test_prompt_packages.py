@@ -43,11 +43,11 @@ def test_interaction_prompt_defines_data_analysis_identity_and_capability_answer
     assert "large language model" not in text
 
 
-def test_prompt_package_includes_mode_intents_for_interaction() -> None:
+def test_prompt_package_includes_mode_tools_for_interaction() -> None:
     package = PromptPackageRegistry(Path("src/app/agents/prompts")).load("interaction")
     text = package.prompt_text
 
-    assert "Allowed interaction intents" in text
+    assert "Allowed interaction tool names" in text
     assert "`handoff_to_analyst`" in text
     assert "`handoff_to_knowledge`" in text
     assert "`request_clarification`" in text
@@ -77,11 +77,33 @@ def test_prompt_package_advertises_tool_registry_not_commands(tmp_path) -> None:
     # Harness commands are no longer surfaced as runtime-callable tool sigs.
     assert "doctor(" not in text
     assert "compact(" not in text
+    assert "plan_analysis(" not in text
+    assert "`request_execution(" not in text
+    assert "workspace_status" not in text
+    assert "workspace_inventory" not in text
 
 
-def test_analyst_prompt_prefers_code_lines_for_plan_analysis() -> None:
+def test_prompt_package_allowed_intents_are_registered_tool_names(tmp_path) -> None:
+    orch = Orchestrator(app_root=tmp_path)
+    package = PromptPackageRegistry(
+        Path("src/app/agents/prompts"),
+        tool_registry=orch.tool_registry,
+    ).load("analyst")
+    text = package.prompt_text
+
+    assert "Allowed analyst tool names" in text
+    assert "`analysis_plan`" in text
+    assert "`analysis_request_execution`" in text
+    assert "`plan_analysis`" not in text
+    assert "`request_execution`" not in text
+
+
+def test_analyst_prompt_emits_code_free_plan() -> None:
     package = PromptPackageRegistry(Path("src/app/agents/prompts")).load("analyst")
     text = package.prompt_text
 
-    assert '"code_lines":["import pandas as pd","from pathlib import Path"' in text
-    assert "Use `code_lines` instead of a multi-line `code` string" in text
+    # Two-step: the model emits a CODE-FREE plan; the harness writes the code.
+    assert "do NOT write any code" in text
+    assert '"code_lines":["import pandas as pd' not in text  # old code example gone
+    assert '"steps":[{"purpose"' in text
+    assert "declared_inputs" in text and "expected_outputs" in text

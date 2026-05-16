@@ -12,10 +12,9 @@ class KnowledgeMode:
             "package": self.registry.load("knowledge"),
             "user_text": user_text,
             "allowed_harness_intents": [
-                "store_workspace_knowledge",
-                "update_preferences",
-                "record_gap",
-                "save_function_candidate",
+                "knowledge_recall",
+                "knowledge_propose_update",
+                "respond_to_user",
                 "request_clarification",
             ],
         }

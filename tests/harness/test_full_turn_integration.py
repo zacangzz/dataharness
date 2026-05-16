@@ -1,4 +1,4 @@
-"""Full turn integration — analyst plans now built via `plan_analysis` tool_call dispatch."""
+"""Full turn integration for the command-side `plan_analysis` approval path."""
 from datetime import UTC, datetime
 from pathlib import Path
 

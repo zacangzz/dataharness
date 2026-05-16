@@ -8,22 +8,22 @@ This document provides a detailed technical breakdown of the Doctor function in 
 *   **`Orchestrator._handle_doctor` (`src/harness/orchestrator.py`)**
     *   **Role**: Entry point for manual `/doctor` command.
     *   **Logic**: Dispatches to `DoctorRunner.run`.
-*   **`DoctorRunner.run` (`src/harness/doctor_runner.py`)**
+*   **`DoctorRunner.run` (`src/harness/services/doctor.py`)**
     *   **Role**: Orchestration of diagnostic phases.
     *   **Logic**: Iterates through `PHASES` (scan_sources, review_tmp, review_memory, etc.). Emits `DoctorFinding`, `DoctorActionProposed`, and `DoctorReportReady`.
-*   **`Doctor.check_all_sources` (`src/harness/doctor.py`)**
+*   **`Doctor.check_all_sources` (`src/harness/services/doctor.py`)**
     *   **Role**: Source integrity check.
     *   **Logic**: Scans `data/` folder, compares with `source_records`, and identifies drift or broken lineage via `lazy_fingerprint`.
-*   **`Doctor.inventory_tmp_artifacts` (`src/harness/doctor.py`)**
+*   **`Doctor.inventory_tmp_artifacts` (`src/harness/services/doctor.py`)**
     *   **Role**: Tmp management.
     *   **Logic**: Scans `artifacts/tmp/` for stale (7+ days) or orphaned files. Classifies them for `cleanup` or `keep`.
-*   **`DoctorRunner._run_chat_knowledge_mining` (`src/harness/doctor_runner.py`)**
+*   **`DoctorRunner._run_chat_knowledge_mining` (`src/harness/services/doctor.py`)**
     *   **Role**: Semantic diagnostic.
     *   **Logic**: Uses Runtime/LLM to extract notes and preferences from recent chat turns.
 *   **`Orchestrator.apply_doctor_actions` (`src/harness/orchestrator.py`)**
     *   **Role**: Action orchestration.
     *   **Logic**: Filters `tmp_actions` based on user `action_ids` and invokes `Doctor.apply_tmp_action`. Emits `DoctorActionsApplied`.
-*   **`Doctor.apply_tmp_action` (`src/harness/doctor.py`)**
+*   **`Doctor.apply_tmp_action` (`src/harness/services/doctor.py`)**
     *   **Role**: File system operations.
     *   **Logic**: Performs `unlink` for cleanup or `rename` for promotion to `memory/functions` or `artifacts/`.
 

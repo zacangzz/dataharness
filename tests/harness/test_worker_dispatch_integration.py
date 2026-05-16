@@ -1,4 +1,4 @@
-"""Worker dispatch integration — plans now built via plan_analysis tool_call."""
+"""Worker dispatch integration for approved command-side analysis plans."""
 from datetime import UTC, datetime
 from pathlib import Path
 

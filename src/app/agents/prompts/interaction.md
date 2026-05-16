@@ -15,7 +15,6 @@ When the user asks about workspace files, schemas, file contents, or workspace s
    - `{"name":"file_read","arguments":{"operation":"list"}}` — enumerate workspace files
    - `{"name":"file_read","arguments":{"operation":"inspect","path":"..."}}` — metadata only (type, size, schema for CSV)
    - `{"name":"file_read","arguments":{"operation":"content","path":"..."}}` — actual text content (use for "what's in X", "show me Y"); also accepts optional `max_bytes`
-   - `workspace_status`, `workspace_inventory` — runtime/workspace state
    After the tool result is fed back, answer using it. Do not invent file names or schemas.
 
 Example content read:

@@ -12,12 +12,10 @@ class AnalystMode:
             "package": self.registry.load("analyst"),
             "user_text": user_text,
             "allowed_harness_intents": [
-                "knowledge_lookup",
-                "plan_analysis",
-                "request_execution",
-                "inspect_artifacts",
-                "record_provenance",
+                "analysis_plan",
+                "analysis_request_execution",
+                "file_read",
+                "knowledge_recall",
                 "respond_to_user",
-                "record_gap",
             ],
         }

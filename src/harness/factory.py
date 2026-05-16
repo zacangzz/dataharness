@@ -4,10 +4,10 @@ from pathlib import Path
 
 from harness.context import ContextManager
 from harness.db import WorkspaceDb
-from harness.doctor import Doctor
 from harness.knowledge import KnowledgeManager
 from harness.orchestrator import Orchestrator
 from harness.persistence import HarnessPersistence
+from harness.services.doctor import Doctor
 from observability import Telemetry, resolve_telemetry_dir
 from runtime.protocol import Runtime
 from worker.executor import PythonStepExecutor

@@ -33,7 +33,18 @@ Tool argument descriptors must support deterministic validation before handler e
 - `respond_to_user`: model control signal consumed by the agentic loop.
 
 ### Analysis Tools
-- `analysis_plan`: create a validated analysis plan and emit `ApprovalRequired`.
+- `analysis_plan`: the model emits a CODE-FREE plan
+  (`{goal, steps:[{purpose, declared_inputs, expected_outputs}]}`). The
+  harness then runs a two-step flow: gen-1 is the model's code-free plan;
+  gen-2 is an internal, non-persisted generation that synthesizes each step's
+  Python as a fenced ```` ```python ```` block (no JSON escaping). The harness
+  validates each step's generated code (allowed imports, every expected output
+  referenced) with one bounded gen-2 retry per step, then emits a SINGLE
+  `ApprovalRequired` over the assembled plan+code. Structurally invalid gen-1
+  plans get one code-free shape-repair retry; exhausted repairs yield a
+  plain-language `FinalMessage` (never a silent dead turn).
+  The command path (`plan_analysis`) is unchanged: code is supplied directly
+  and gen-2 is NOT invoked.
 - `analysis_request_execution`: re-emit approval for an existing pending plan step.
 - `analysis_inspect_artifact`: inspect analysis artifacts.
 - `analysis_inspect_provenance`: inspect lineage for analysis outputs.
@@ -85,6 +96,10 @@ Tool argument descriptors must support deterministic validation before handler e
 - memory proposal approval/rejection/application commands when added.
 
 ## Migration Notes
+
+The command split is source-level as well as registry-level: `doctor` and
+`compact` have dedicated command modules, while shared implementation lives
+under `src/harness/services/`.
 
 The following old command names remain as compatibility commands during migration but are not model-callable tools:
 
