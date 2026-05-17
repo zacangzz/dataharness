@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from harness.context import list_workspace_files, read_file_schema
+from harness.services.context import list_workspace_files, read_file_schema
 
 
 READ_FILE_CHAR_CAP = 32_000

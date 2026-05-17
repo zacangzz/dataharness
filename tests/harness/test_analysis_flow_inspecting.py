@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from harness.analysis_flow import AnalysisFlow, AnalysisPhase
+from harness.core.analysis_flow import AnalysisFlow, AnalysisPhase
 from harness.control import RunStateRecord
 from harness.events import FinalMessage
 from harness.orchestrator import Orchestrator
@@ -36,10 +36,6 @@ class ProseRuntime:
         return "ready"
 
 
-def _provider(mode: str) -> str:
-    return f"PROMPT[{mode}]"
-
-
 def _logged_phases(tmp_path) -> list[str]:
     log = tmp_path / "state" / "analysis_flows.jsonl"
     phases = []
@@ -59,8 +55,7 @@ async def test_analyst_entry_creates_inspecting_flow(tmp_path) -> None:
     [
         e async for e in orch.run_agentic_turn(
             state, workspace_dir=tmp_path, chat_id="c1",
-            user_input="hire rates over last 2 months?", requested_mode="analyst",
-            prompt_provider=_provider, max_iterations=1,
+            user_input="hire rates over last 2 months?", max_iterations=1,
         )
     ]
 
@@ -86,8 +81,7 @@ async def test_plan_intent_prose_transitions_through_plan_pending(tmp_path) -> N
     events = [
         e async for e in orch.run_agentic_turn(
             state, workspace_dir=tmp_path, chat_id="c1",
-            user_input="hire rates?", requested_mode="analyst",
-            prompt_provider=_provider, max_iterations=1,
+            user_input="hire rates?", max_iterations=1,
         )
     ]
 
@@ -107,8 +101,7 @@ async def test_interaction_prose_only_creates_no_flow(tmp_path) -> None:
     [
         e async for e in orch.run_agentic_turn(
             state, workspace_dir=tmp_path, chat_id="c1",
-            user_input="hello", requested_mode="interaction",
-            prompt_provider=_provider, max_iterations=1,
+            user_input="hello", max_iterations=1,
         )
     ]
 
@@ -150,8 +143,7 @@ async def test_analyst_prose_without_plan_intent_releases_flow(tmp_path) -> None
     events = [
         e async for e in orch.run_agentic_turn(
             state, workspace_dir=tmp_path, chat_id="c1",
-            user_input="what is a hire rate?", requested_mode="analyst",
-            prompt_provider=_provider, max_iterations=1,
+            user_input="what is a hire rate?", max_iterations=1,
         )
     ]
 

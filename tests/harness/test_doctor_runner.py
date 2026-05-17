@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from harness.doctor_runner import DoctorRunner
+from harness.services.doctor import DoctorRunner
 from harness.events import (
     CommandCompleted, CommandProgress, CommandStarted,
     DoctorActionProposed, DoctorFinding, DoctorReportReady, DoctorStarted,

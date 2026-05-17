@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from harness.chat import ChatMessage, ChatStore, ChatSummary
+from harness.services.chat import ChatMessage, ChatStore, ChatSummary
 from harness.exceptions import ChatNotFound
 
 

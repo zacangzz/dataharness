@@ -4,27 +4,24 @@ This document describes how DataHarness handles analytical and data science ques
 
 ## 1. Layer-wise Key Functions
 
-### Layer 4: Application Session And Mode Selection
-*   **`AgentModeRouter.route` (`src/app/agents/router.py`)**
-    *   **Role**: Initial mode selection for each user turn.
-    *   **Logic**: Routes to analyst mode when the prompt contains analysis, aggregation, transformation, charting, forecasting, or workspace data-reference language. Knowledge-capture language routes to knowledge mode first; otherwise the app defaults to interaction mode unless an optional LLM classifier returns another mode.
-*   **`AnalystMode.build_turn` (`src/app/agents/analyst.py`)**
-    *   **Role**: Analyst prompt package declaration.
-    *   **Logic**: Loads the analyst prompt and declares the analyst-visible harness intents: `analysis_plan`, `analysis_request_execution`, `file_read`, `knowledge_recall`, and `respond_to_user`.
-*   **`PromptPackageRegistry.load` (`src/app/agents/prompt_packages.py`)**
-    *   **Role**: Prompt assembly.
-    *   **Logic**: Builds the prompt from the shared system prompt, `analyst.md`, the registered tool catalog, and the response-format prompt. The catalog is backed by `HarnessToolRegistry`, not the command registry.
+### Layer 4: Application Session Facade
 *   **`AppSession.run_user_turn` (`src/app/session.py`)**
     *   **Role**: Layer 4 facade.
-    *   **Logic**: Selects the initial mode, provides mode prompts to Layer 3, and maps harness events into app events for the TUI.
+    *   **Logic**: A passthrough — forwards the user turn to `Orchestrator.run_agentic_turn` and maps harness events into app events for the TUI. It does not select the mode or supply prompts; routing and prompt selection are owned by Layer 3.
 
 ### Layer 3: Harness Agentic Loop And Tool Dispatch
+*   **`ModeRouter.route` (`src/harness/services/mode_router.py`)**
+    *   **Role**: Prompt-profile selection for each user turn.
+    *   **Logic**: Routes to analyst mode when the prompt contains analysis, aggregation, transformation, charting, forecasting, or workspace data-reference language. Knowledge-capture language routes to knowledge mode first; otherwise it defaults to interaction mode unless an optional LLM classifier returns another mode. Returns a `ProfileDecision` (`.mode`/`.reason`); `request_mode()` is a stable alias of `route()`. The orchestrator invokes this via `Orchestrator._select_profile`, which applies mode continuity and writes `state.active_agent_mode`.
+*   **`PromptProfileRegistry.load` (`src/harness/services/prompt_profiles.py`)**
+    *   **Role**: Prompt assembly.
+    *   **Logic**: Builds a `PromptPackage` from the shared system prompt, the persona prompt (e.g. `analyst.md` under `src/harness/prompts/`), the registered tool catalog, and the response-format prompt. The analyst profile exposes the analyst-visible harness tools: `analysis_plan`, `analysis_request_execution`, `file_read`, `knowledge_recall`, and `respond_to_user`. The catalog is backed by `HarnessToolRegistry`, not the command registry.
 *   **`Orchestrator.run_agentic_turn` (`src/harness/orchestrator.py`)**
     *   **Role**: Agentic control loop.
-    *   **Logic**: Runs the runtime turn, captures structured tool calls, handles mid-turn handoff to analyst mode, dispatches tools through `HarnessToolRegistry`, formats tool results into follow-up prompts, and stops at approval gates.
-*   **`AnalysisFlow` (`src/harness/analysis_flow.py`)**
+    *   **Logic**: Selects the prompt profile internally (via `_select_profile`/`ModeRouter`), runs the runtime turn, captures structured tool calls, handles mid-turn handoff to analyst mode, dispatches tools through `HarnessToolRegistry`, formats tool results into follow-up prompts, and stops at approval gates.
+*   **`AnalysisFlow` (`src/harness/core/analysis_flow.py`)**
     *   **Role**: Durable per-chat analysis state.
-    *   **Logic**: Tracks an in-flight analysis through `inspecting`, `plan_pending`, `approval_pending`, `executing`, `done`, and `failed`. The orchestrator persists and replays this state so a multi-turn analysis is not lost when Layer 4 re-routes a later message.
+    *   **Logic**: Tracks an in-flight analysis through `inspecting`, `plan_pending`, `approval_pending`, `executing`, `done`, and `failed`. The orchestrator persists and replays this state so a multi-turn analysis is not lost when a later message would otherwise route to a different mode.
 *   **`Orchestrator._dispatch_tool_call` (`src/harness/orchestrator.py`)**
     *   **Role**: Model tool enforcement.
     *   **Logic**: Resolves and validates every model-emitted tool through `tool_registry` only. Command-only names such as `plan_analysis`, `doctor`, and `compact` do not dispatch as model tools.
@@ -63,7 +60,7 @@ This document describes how DataHarness handles analytical and data science ques
 
 ### Phase A: Mode Entry
 1.  **Trigger**: The user asks for a calculation, comparison, transformation, chart, forecast, summary, aggregation, or data-backed answer.
-2.  **Routing**: `AgentModeRouter` selects analyst mode, or the interaction model emits `handoff_to_analyst`.
+2.  **Routing**: the Layer-3 `ModeRouter` (via `Orchestrator._select_profile`) selects analyst mode, or the interaction model emits `handoff_to_analyst`.
 3.  **Prompting**: The analyst prompt is built with the registered tool catalog and the analyst allowed-tool subset.
 
 ### Phase B: Inspection

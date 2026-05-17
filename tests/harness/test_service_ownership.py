@@ -4,18 +4,13 @@ from harness.orchestrator import Orchestrator
 
 
 def test_doctor_service_is_canonical_owner() -> None:
-    from harness.doctor_runner import PHASES as CompatPhases
-    from harness.doctor import Doctor as CompatDoctor
-    from harness.doctor import TmpCleanupBlocked as CompatTmpCleanupBlocked
-    from harness.doctor_runner import DoctorRunner as CompatDoctorRunner
     from harness.services.doctor import PHASES, Doctor, DoctorRunner, TmpCleanupBlocked
 
-    assert CompatDoctor is Doctor
-    assert CompatDoctorRunner is DoctorRunner
-    assert CompatTmpCleanupBlocked is TmpCleanupBlocked
-    assert CompatPhases is PHASES
     assert Doctor.__module__ == "harness.services.doctor"
     assert DoctorRunner.__module__ == "harness.services.doctor"
+    assert TmpCleanupBlocked.__module__ == "harness.services.doctor"
+    assert PHASES.__class__.__module__ == "builtins"
+    assert len(PHASES) > 0
 
 
 def test_orchestrator_uses_doctor_service_owner(tmp_path: Path) -> None:

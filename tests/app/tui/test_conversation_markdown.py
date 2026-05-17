@@ -59,7 +59,7 @@ async def test_conversation_pane_renders_failure_block(tmp_path):
 async def test_conversation_rehydrates_user_and_assistant_blocks(tmp_path):
     from datetime import UTC, datetime
     from types import SimpleNamespace
-    from harness.chat import ChatMessage
+    from harness.services.chat import ChatMessage
 
     app = App()
     pane = ConversationPane(id="conversation")

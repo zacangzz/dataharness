@@ -1,6 +1,6 @@
 import pytest
 
-from harness.approval import TimedDecisionGate
+from harness.core.approval import TimedDecisionGate
 
 
 def test_non_execution_decision_auto_proceeds_after_timeout() -> None:

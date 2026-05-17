@@ -35,8 +35,8 @@ def test_build_app_collects_local_packages_reached_by_dynamic_imports() -> None:
 
     assert "--hidden-import app.session" in script
     assert "--hidden-import harness.control" in script
-    assert "--hidden-import harness.factory" in script
-    assert "--hidden-import harness.workspace" in script
+    assert "--hidden-import harness.core.factory" in script
+    assert "--hidden-import harness.core.workspace" in script
     assert "--hidden-import runtime.config" in script
     assert "--hidden-import runtime.llama_cpp_runtime" in script
     assert "--hidden-import worker.sandbox_bootstrap" in script

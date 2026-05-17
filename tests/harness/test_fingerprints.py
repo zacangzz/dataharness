@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from harness.fingerprints import lazy_fingerprint, sha256_file
+from harness.core.fingerprints import lazy_fingerprint, sha256_file
 
 
 def test_first_ingest_stores_full_fingerprint(tmp_path: Path) -> None:

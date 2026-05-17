@@ -8,7 +8,7 @@ import pytest
 
 from harness.control import RunStateRecord
 from harness.orchestrator import Orchestrator
-from test_agentic_turn import FakeRuntime, _Scenario, _provider  # type: ignore
+from test_agentic_turn import FakeRuntime, _Scenario  # type: ignore
 
 
 def _state() -> RunStateRecord:
@@ -30,7 +30,6 @@ async def test_only_original_user_input_persisted(tmp_path):
     state = _state()
     _ = [e async for e in orch.run_agentic_turn(
         state, workspace_dir=ws, chat_id="c1", user_input="what files?",
-        requested_mode="interaction", prompt_provider=_provider(),
     )]
 
     record = await orch.chat_store.view_chat("c1")
@@ -54,7 +53,6 @@ async def test_assistant_draft_wrapper_stripped_before_persist(tmp_path):
 
     _ = [e async for e in orch.run_agentic_turn(
         _state(), workspace_dir=ws, chat_id="c2", user_input="hi",
-        requested_mode="interaction", prompt_provider=_provider(),
     )]
 
     record = await orch.chat_store.view_chat("c2")

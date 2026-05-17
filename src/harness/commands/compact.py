@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from harness.command_registry import HarnessCommandDescriptor, HarnessCommandRegistry
+from harness.core.command_registry import HarnessCommandDescriptor, HarnessCommandRegistry
 
 if TYPE_CHECKING:
     from harness.orchestrator import Orchestrator

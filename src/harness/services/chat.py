@@ -16,7 +16,7 @@ from pydantic import BaseModel, Field
 from harness.exceptions import ChatNotFound, ChatWorkspaceMismatch
 from runtime.types import RuntimeMessage, RuntimeRequest
 
-_COMPACTION_PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "compaction.md"
+_COMPACTION_PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "compaction.md"
 
 
 class ChatMessage(BaseModel):

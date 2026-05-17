@@ -1,6 +1,6 @@
 from datetime import UTC, datetime
 
-from harness.chat import (
+from harness.services.chat import (
     ChatMessage, ChatRecord, RuntimeRequestBuilder,
 )
 

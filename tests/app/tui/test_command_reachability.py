@@ -5,7 +5,7 @@ from app.tui.app import DataHarnessApp
 from app.tui.commands import DataHarnessCommandProvider
 from app.tui.prompt_bar import PromptBar
 from app.tui.screens.command_palette import CommandPaletteScreen
-from harness.command_registry import CommandContext
+from harness.core.command_registry import CommandContext
 from harness.orchestrator import Orchestrator
 
 

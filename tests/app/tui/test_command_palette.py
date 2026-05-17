@@ -20,7 +20,7 @@ async def test_palette_shows_registered_commands(tmp_path):
 
 @pytest.mark.asyncio
 async def test_palette_annotates_unavailable_commands(tmp_path):
-    from harness.command_registry import HarnessCommandDescriptor, ArgSpec
+    from harness.core.command_registry import HarnessCommandDescriptor, ArgSpec
 
     app = DataHarnessApp(workspace_dir=tmp_path / "w" / "w_0001")
     async with app.run_test() as pilot:

@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from harness.command_registry import (
+from harness.core.command_registry import (
     ArgSpec, CommandContext, HarnessCommandDescriptor, HarnessCommandRegistry,
 )
 from harness.control import RunStateRecord
@@ -94,18 +94,8 @@ def workspace(tmp_path):
     return ws
 
 
-def _provider(table: dict[str, str] | None = None):
-    table = table or {
-        "interaction": "interaction prompt",
-        "analyst": "analyst prompt",
-        "knowledge": "knowledge prompt",
-        "clarification": "clarification prompt",
-    }
-    return lambda mode: table.get(mode, "")
-
-
-def _state() -> RunStateRecord:
-    return RunStateRecord(workspace_id="w_test", active_agent_mode="interaction")
+def _state(active_agent_mode: str = "interaction") -> RunStateRecord:
+    return RunStateRecord(workspace_id="w_test", active_agent_mode=active_agent_mode)
 
 
 @pytest.mark.asyncio
@@ -114,7 +104,6 @@ async def test_simple_text_response(tmp_path, workspace):
     orch = Orchestrator(runtime=runtime, app_root=tmp_path)
     events = [e async for e in orch.run_agentic_turn(
         _state(), workspace_dir=workspace, chat_id="c1", user_input="hi",
-        requested_mode="interaction", prompt_provider=_provider(),
     )]
     finals = [e for e in events if e.event_name == "FinalMessage"]
     assert finals and finals[-1].text == "hello world"
@@ -137,7 +126,6 @@ async def test_tool_loop_dispatches_file_read(tmp_path, workspace):
 
     events = [e async for e in orch.run_agentic_turn(
         state, workspace_dir=real_ws, chat_id="c1", user_input="what files?",
-        requested_mode="interaction", prompt_provider=_provider(),
     )]
     executed = [e for e in events if isinstance(e, ToolCallExecuted)]
     finals = [e for e in events if e.event_name == "FinalMessage"]
@@ -158,7 +146,6 @@ async def test_handoff_reruns_under_target_mode(tmp_path, workspace):
     orch = Orchestrator(runtime=runtime, app_root=tmp_path)
     events = [e async for e in orch.run_agentic_turn(
         _state(), workspace_dir=workspace, chat_id="c1", user_input="tell me about it",
-        requested_mode="interaction", prompt_provider=_provider(),
     )]
     handoffs = [e for e in events if isinstance(e, ModeHandoffAccepted)]
     finals = [e for e in events if e.event_name == "FinalMessage"]
@@ -177,7 +164,6 @@ async def test_double_handoff_blocked(tmp_path, workspace):
     orch = Orchestrator(runtime=runtime, app_root=tmp_path)
     events = [e async for e in orch.run_agentic_turn(
         _state(), workspace_dir=workspace, chat_id="c1", user_input="?",
-        requested_mode="interaction", prompt_provider=_provider(),
     )]
     handoffs = [e for e in events if isinstance(e, ModeHandoffAccepted)]
     assert len(handoffs) == 1
@@ -193,7 +179,6 @@ async def test_empty_output_retried_once(tmp_path, workspace):
     orch = Orchestrator(runtime=runtime, app_root=tmp_path)
     events = [e async for e in orch.run_agentic_turn(
         _state(), workspace_dir=workspace, chat_id="c1", user_input="?",
-        requested_mode="interaction", prompt_provider=_provider(),
     )]
     fails = [e for e in events if e.event_name == "TurnFailed"]
     finals = [e for e in events if e.event_name == "FinalMessage"]
@@ -208,7 +193,6 @@ async def test_empty_output_gives_up_after_one_retry(tmp_path, workspace):
     orch = Orchestrator(runtime=runtime, app_root=tmp_path)
     events = [e async for e in orch.run_agentic_turn(
         _state(), workspace_dir=workspace, chat_id="c1", user_input="?",
-        requested_mode="interaction", prompt_provider=_provider(),
     )]
     fails = [e for e in events if e.event_name == "TurnFailed"]
     assert len(fails) == 4
@@ -232,7 +216,6 @@ async def test_unhandled_turn_failure_terminates_agentic_loop(tmp_path, workspac
     orch = Orchestrator(runtime=runtime, app_root=tmp_path)
     events = [e async for e in orch.run_agentic_turn(
         _state(), workspace_dir=workspace, chat_id="c1", user_input="?",
-        requested_mode="interaction", prompt_provider=_provider(),
     )]
     fails = [e for e in events if e.event_name == "TurnFailed"]
     assert len(fails) == 1
@@ -259,8 +242,7 @@ async def test_approval_required_terminates_loop(tmp_path, workspace):
     ])
     orch = Orchestrator(runtime=runtime, app_root=tmp_path)
     events = [e async for e in orch.run_agentic_turn(
-        _state(), workspace_dir=workspace, chat_id="c1", user_input="count rows",
-        requested_mode="analyst", prompt_provider=_provider(),
+        _state("analyst"), workspace_dir=workspace, chat_id="c1", user_input="count rows",
     )]
     approvals = [e for e in events if isinstance(e, ApprovalRequired)]
     assert approvals
@@ -298,9 +280,8 @@ async def test_invalid_plan_analysis_is_repaired_once_internally(tmp_path, works
     ])
     orch = Orchestrator(runtime=runtime, app_root=tmp_path)
     events = [e async for e in orch.run_agentic_turn(
-        _state(), workspace_dir=workspace, chat_id="c1",
+        _state("analyst"), workspace_dir=workspace, chat_id="c1",
         user_input="add revenue_per_unit to @data/sales.csv",
-        requested_mode="analyst", prompt_provider=_provider(),
     )]
 
     approvals = [e for e in events if isinstance(e, ApprovalRequired)]
@@ -360,8 +341,7 @@ async def test_runtime_error_diagnostics_are_preserved_on_turn_failed(tmp_path, 
     orch = Orchestrator(runtime=runtime, app_root=tmp_path)
 
     events = [e async for e in orch.run_agentic_turn(
-        _state(), workspace_dir=workspace, chat_id="c1", user_input="?",
-        requested_mode="analyst", prompt_provider=_provider(),
+        _state("analyst"), workspace_dir=workspace, chat_id="c1", user_input="?",
     )]
 
     fails = [e for e in events if e.event_name == "TurnFailed"]
@@ -388,9 +368,8 @@ async def test_repeated_invalid_plan_analysis_reports_no_code_ran(tmp_path, work
     ])
     orch = Orchestrator(runtime=runtime, app_root=tmp_path)
     events = [e async for e in orch.run_agentic_turn(
-        _state(), workspace_dir=workspace, chat_id="c1",
+        _state("analyst"), workspace_dir=workspace, chat_id="c1",
         user_input="add revenue_per_unit to @data/sales.csv",
-        requested_mode="analyst", prompt_provider=_provider(),
     )]
 
     assert not [e for e in events if isinstance(e, ApprovalRequired)]
@@ -410,7 +389,6 @@ async def test_unknown_tool_returns_error_and_recovers(tmp_path, workspace):
     orch = Orchestrator(runtime=runtime, app_root=tmp_path)
     events = [e async for e in orch.run_agentic_turn(
         _state(), workspace_dir=workspace, chat_id="c1", user_input="?",
-        requested_mode="interaction", prompt_provider=_provider(),
     )]
     executed = [e for e in events if isinstance(e, ToolCallExecuted)]
     finals = [e for e in events if e.event_name == "FinalMessage"]
@@ -441,7 +419,6 @@ async def test_model_tool_call_cannot_dispatch_harness_command(tmp_path, workspa
     orch = Orchestrator(runtime=runtime, app_root=tmp_path)
     events = [e async for e in orch.run_agentic_turn(
         _state(), workspace_dir=workspace, chat_id="c1", user_input="?",
-        requested_mode="interaction", prompt_provider=_provider(),
     )]
     executed = [e for e in events if isinstance(e, ToolCallExecuted)]
     assert executed and "error" in executed[0].result
@@ -472,8 +449,8 @@ async def test_model_tool_call_cannot_dispatch_legacy_plan_analysis_command(tmp_
     orch = Orchestrator(runtime=runtime, app_root=tmp_path)
 
     events = [e async for e in orch.run_agentic_turn(
-        _state(), workspace_dir=workspace, chat_id="chat_active",
-        user_input="count rows", requested_mode="analyst", prompt_provider=_provider(),
+        _state("analyst"), workspace_dir=workspace, chat_id="chat_active",
+        user_input="count rows",
     )]
 
     executed = [e for e in events if isinstance(e, ToolCallExecuted)]
@@ -502,8 +479,8 @@ async def test_analysis_tool_events_keep_active_chat_id(tmp_path, workspace):
     orch = Orchestrator(runtime=runtime, app_root=tmp_path)
 
     events = [e async for e in orch.run_agentic_turn(
-        _state(), workspace_dir=workspace, chat_id="chat_active",
-        user_input="count rows", requested_mode="analyst", prompt_provider=_provider(),
+        _state("analyst"), workspace_dir=workspace, chat_id="chat_active",
+        user_input="count rows",
     )]
 
     command_events = [e for e in events if isinstance(e, (CommandStarted, CommandCompleted))]
@@ -513,9 +490,9 @@ async def test_analysis_tool_events_keep_active_chat_id(tmp_path, workspace):
 
 @pytest.mark.asyncio
 async def test_knowledge_propose_update_creates_pending_proposal_with_run_id(tmp_path, workspace):
-    from harness.db import WorkspaceDb
-    from harness.knowledge import KnowledgeManager
-    from harness.persistence import HarnessPersistence
+    from harness.core.db import WorkspaceDb
+    from harness.services.knowledge import KnowledgeManager
+    from harness.core.persistence import HarnessPersistence
 
     db = WorkspaceDb(tmp_path / "state" / "workspace.db")
     db.connect()
@@ -533,7 +510,7 @@ async def test_knowledge_propose_update_creates_pending_proposal_with_run_id(tmp
         }]),
         _Scenario(text="recorded"),
     ])
-    state = _state()
+    state = _state("knowledge")
     orch = Orchestrator(
         runtime=runtime,
         app_root=tmp_path,
@@ -543,7 +520,7 @@ async def test_knowledge_propose_update_creates_pending_proposal_with_run_id(tmp
 
     events = [e async for e in orch.run_agentic_turn(
         state, workspace_dir=workspace, chat_id="chat_active",
-        user_input="remember this", requested_mode="knowledge", prompt_provider=_provider(),
+        user_input="remember this",
     )]
 
     executed = [e for e in events if isinstance(e, ToolCallExecuted)]
@@ -610,7 +587,6 @@ async def test_valid_tool_call_survives_trailing_incomplete_structured_error(tmp
 
     events = [e async for e in orch.run_agentic_turn(
         _state(), workspace_dir=real_ws, chat_id="c1", user_input="what files?",
-        requested_mode="interaction", prompt_provider=_provider(),
     )]
 
     executed = [e for e in events if isinstance(e, ToolCallExecuted)]
@@ -653,7 +629,6 @@ async def test_incomplete_structured_content_classified_by_error_code_and_retrie
     orch = Orchestrator(runtime=runtime, app_root=tmp_path)
     events = [e async for e in orch.run_agentic_turn(
         _state(), workspace_dir=workspace, chat_id="c1", user_input="?",
-        requested_mode="interaction", prompt_provider=_provider(),
     )]
 
     finals = [e for e in events if e.event_name == "FinalMessage"]
@@ -679,7 +654,6 @@ async def test_exhausted_malformed_retry_yields_final_message(tmp_path, workspac
     orch = Orchestrator(runtime=runtime, app_root=tmp_path)
     events = [e async for e in orch.run_agentic_turn(
         _state(), workspace_dir=workspace, chat_id="c1", user_input="?",
-        requested_mode="interaction", prompt_provider=_provider(),
     )]
 
     finals = [e for e in events if e.event_name == "FinalMessage"]

@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Any
 
-from harness.command_registry import HarnessCommandDescriptor
+from harness.core.command_registry import HarnessCommandDescriptor
 from harness.commands.compact import register_compact_commands
 from harness.commands.diagnostics import register_diagnostics_commands
 from harness.commands.doctor import register_doctor_commands

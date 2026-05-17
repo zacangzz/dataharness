@@ -1,6 +1,6 @@
 import pytest
 
-from harness.command_registry import parse_slash
+from harness.core.command_registry import parse_slash
 
 
 def test_simple_command():

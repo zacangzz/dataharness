@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from harness.knowledge import KnowledgeManager
+from harness.services.knowledge import KnowledgeManager
 
 
 def test_knowledge_manager_reads_and_updates_preferences(tmp_path: Path) -> None:
@@ -52,9 +52,9 @@ def test_saved_function_reuse_requires_freshness_check(tmp_path: Path) -> None:
 
 
 def test_propose_update_creates_pending_proposal(tmp_path):
-    from harness.db import WorkspaceDb
-    from harness.knowledge import KnowledgeManager
-    from harness.persistence import HarnessPersistence
+    from harness.core.db import WorkspaceDb
+    from harness.services.knowledge import KnowledgeManager
+    from harness.core.persistence import HarnessPersistence
 
     db = WorkspaceDb(tmp_path / "state" / "workspace.db")
     db.connect()
@@ -74,9 +74,9 @@ def test_propose_update_creates_pending_proposal(tmp_path):
 
 
 def test_apply_writes_file_and_marks_applied(tmp_path):
-    from harness.db import WorkspaceDb
-    from harness.knowledge import KnowledgeManager
-    from harness.persistence import HarnessPersistence
+    from harness.core.db import WorkspaceDb
+    from harness.services.knowledge import KnowledgeManager
+    from harness.core.persistence import HarnessPersistence
 
     db = WorkspaceDb(tmp_path / "state" / "workspace.db")
     db.connect()
@@ -98,9 +98,9 @@ def test_apply_writes_file_and_marks_applied(tmp_path):
 
 def test_apply_blocked_by_unresolved_conflict(tmp_path):
     import pytest
-    from harness.db import WorkspaceDb
-    from harness.knowledge import KnowledgeManager
-    from harness.persistence import HarnessPersistence
+    from harness.core.db import WorkspaceDb
+    from harness.services.knowledge import KnowledgeManager
+    from harness.core.persistence import HarnessPersistence
 
     db = WorkspaceDb(tmp_path / "state" / "workspace.db")
     db.connect()
@@ -122,7 +122,7 @@ def test_apply_blocked_by_unresolved_conflict(tmp_path):
 
 def test_external_memory_write_blocked(tmp_path):
     import pytest
-    from harness.knowledge import MemoryWriteForbidden, guarded_external_memory_write
+    from harness.services.knowledge import MemoryWriteForbidden, guarded_external_memory_write
 
     workspace = tmp_path / "w_0001"
     (workspace / "memory" / "notes").mkdir(parents=True)

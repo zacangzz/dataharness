@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, cast
 from textual.command import DiscoveryHit, Hit, Hits, Provider
 from textual.types import IgnoreReturnCallbackType
 
-from harness.command_registry import CommandContext, HarnessCommandDescriptor
+from harness.core.command_registry import CommandContext, HarnessCommandDescriptor
 
 if TYPE_CHECKING:
     from app.tui.app import DataHarnessApp

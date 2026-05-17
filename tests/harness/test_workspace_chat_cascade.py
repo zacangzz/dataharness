@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from pathlib import Path
 
-from harness.chat import ChatMessage, ChatStore
+from harness.services.chat import ChatMessage, ChatStore
 
 
 async def test_cascade_removes_directory(tmp_path: Path):

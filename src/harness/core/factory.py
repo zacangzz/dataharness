@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from harness.context import ContextManager
-from harness.db import WorkspaceDb
-from harness.knowledge import KnowledgeManager
+from harness.services.context import ContextManager
+from harness.core.db import WorkspaceDb
+from harness.services.knowledge import KnowledgeManager
 from harness.orchestrator import Orchestrator
-from harness.persistence import HarnessPersistence
+from harness.core.persistence import HarnessPersistence
 from harness.services.doctor import Doctor
 from observability import Telemetry, resolve_telemetry_dir
 from runtime.protocol import Runtime

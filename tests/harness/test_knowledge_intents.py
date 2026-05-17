@@ -1,6 +1,6 @@
 import pytest
 
-from harness.knowledge_intents import handle_knowledge_intent
+from harness.services.knowledge_intents import handle_knowledge_intent
 
 
 class FakeKnowledgeManager:

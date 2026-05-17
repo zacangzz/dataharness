@@ -3,7 +3,7 @@ from datetime import UTC, datetime
 import pytest
 
 from harness.control import ApprovalRecord, Plan, PlanStep, RunStateRecord
-from harness.state_machine import HarnessStateMachine, InvalidTransition
+from harness.core.state_machine import HarnessStateMachine, InvalidTransition
 
 
 def code_plan() -> Plan:

@@ -4,9 +4,9 @@ import pytest
 
 from app.session import AppSession
 from harness.control import RunStateRecord
-from harness.db import WorkspaceDb
+from harness.core.db import WorkspaceDb
 from harness.orchestrator import Orchestrator
-from harness.persistence import HarnessPersistence
+from harness.core.persistence import HarnessPersistence
 
 
 def _make_orchestrator(tmp_path: Path) -> Orchestrator:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from harness.command_registry import CommandContext
+from harness.core.command_registry import CommandContext
 from harness.events import ApprovalRequired, CommandCompleted, PlanReady
 from harness.orchestrator import Orchestrator
 

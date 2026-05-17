@@ -25,7 +25,7 @@ async def test_conversation_rehydrates_on_resume_chat(tmp_path):
         chat = await sess.create_chat("w_0001")
         # Seed messages by appending directly via store (orchestrator integration test covers run_turn case)
         from datetime import UTC, datetime
-        from harness.chat import ChatMessage
+        from harness.services.chat import ChatMessage
         await sess.orchestrator.chat_store.append_message(chat.chat_id, ChatMessage(
             message_id="m1", role="user", text="prior question",
             ts=datetime.now(UTC), turn_id="t", active_mode="m", token_estimate=1,

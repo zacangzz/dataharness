@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from harness.factory import build_orchestrator
-from harness.workspace import bootstrap_workspace
+from harness.core.factory import build_orchestrator
+from harness.core.workspace import bootstrap_workspace
 from runtime.types import RuntimeEvent, TokenPressure
 from worker.executor import PythonStepExecutor
 

@@ -11,7 +11,7 @@ from textual.widgets.option_list import Option
 from app.tui.file_picker import FilePicker, format_file_mention
 from app.tui.help import HelpData
 from app.tui.prompt_editor import PromptEditor
-from harness.command_registry import HarnessCommandDescriptor, parse_slash
+from harness.core.command_registry import HarnessCommandDescriptor, parse_slash
 
 
 type HintTarget = tuple[str, str]

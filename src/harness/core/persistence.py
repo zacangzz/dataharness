@@ -7,7 +7,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from harness.control import ApprovalRecord
-from harness.db import WorkspaceDb
+from harness.core.db import WorkspaceDb
 from observability import Telemetry, resolve_telemetry_dir
 from observability.events import EventKind, Layer
 

@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from harness.context import ContextManager
-from harness.prompt_registry import HarnessPromptRegistry
+from harness.services.context import ContextManager
+from harness.core.prompt_registry import HarnessPromptRegistry
 
 
 def test_context_rebuild_uses_durable_sources_not_chat_history(tmp_path: Path) -> None:

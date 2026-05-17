@@ -33,7 +33,7 @@ from app.tui.widgets import (
     SidebarPane,
     WorkspaceBar,
 )
-from harness.command_registry import HarnessCommandDescriptor, parse_slash
+from harness.core.command_registry import HarnessCommandDescriptor, parse_slash
 from harness.control import RunStateRecord
 from observability import Telemetry, bind_session, resolve_telemetry_dir
 from observability.events import EventKind, Layer

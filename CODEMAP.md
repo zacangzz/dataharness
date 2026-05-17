@@ -17,15 +17,17 @@ Skim the **Top-level Indices** for navigation, then drop into **Per-file Invento
 
 | Layer | Path | Role |
 |------|------|------|
-| 4 — App | `src/app/`, `src/cli.py` | TUI, agent mode routing, prompt packages, event mapping |
-| 3 — Harness | `src/harness/` | Orchestrator, state machine, persistence, doctor, knowledge, chat |
+| 4 — App | `src/app/`, `src/cli.py` | TUI + `AppSession` facade, event mapping (no routing/prompt selection) |
+| 3 — Harness | `src/harness/` | Harness Core kernel (`core/`) + services (`services/`) + shared contracts (root); orchestrator, state machine, intent routing, prompt profiles, persistence, doctor, knowledge, chat |
 | 2 — Worker | `src/worker/` | Sandboxed Python step execution |
 | 2 — Runtime | `src/runtime/` | LLM streaming (llama.cpp), tool-call parsing |
 | 0 — Observability | `src/observability/` | Telemetry events, structured logging, path resolution |
 
 **Hard rule (per `factory.py`):** Layer 4 must NOT import `runtime.*` directly. Layer 4 obtains a wired `Orchestrator` via `harness.factory.build_orchestrator`.
 
-**Memory write rule (per `harness/knowledge.py`):** only `KnowledgeManager` may write under `memory/`. `guarded_external_memory_write` always raises.
+**Memory write rule (per `harness/services/knowledge.py`):** only `KnowledgeManager` may write under `memory/`. `guarded_external_memory_write` always raises.
+
+**Layer 3 structure:** Harness Core kernel = `src/harness/core/*`; harness services = `src/harness/services/*`; shared contracts at `src/harness/` root = `control.py`, `events.py`, `exceptions.py`, `status.py`, `orchestrator.py` (+ `__init__.py`). `core/*` must not import `services/*`.
 
 ---
 
@@ -40,19 +42,12 @@ src/cli.py
 src/app/__init__.py                     → (none)
 src/app/events.py                       → (none)
 src/app/event_mapping.py                → app.events
-src/app/session.py                      → app.agents.prompt_packages, app.agents.router, app.event_mapping,
-                                           app.events, harness.command_registry, harness.control,
-                                           harness.events, harness.exceptions, harness.orchestrator,
-                                           harness.status, observability, observability.events,
-                                           runtime.types
-src/app/agents/__init__.py              → app.agents.prompt_packages, app.agents.router
-src/app/agents/types.py                 → (none)
-src/app/agents/router.py                → (none)
-src/app/agents/prompt_packages.py       → app.agents.types, harness.tools.registry
-src/app/agents/analyst.py               → app.agents.prompt_packages
-src/app/agents/knowledge.py             → app.agents.prompt_packages
-src/app/agents/interaction.py           → app.agents.prompt_packages
-(agentic loop relocated to harness layer per spec §8.1; see src/harness/orchestrator.py:run_agentic_turn)
+src/app/session.py                      → app.event_mapping, app.events,
+                                           harness.core.command_registry, harness.control,
+                                           harness.exceptions, harness.orchestrator,
+                                           harness.status, observability, observability.events
+(no app.agents package — routing/prompt profiles are Layer 3 services; src/app/session.py imports neither app.agents nor runtime.*)
+(agentic loop + intent routing + prompt-profile selection relocated to harness layer; see src/harness/orchestrator.py:run_agentic_turn / _select_profile)
 src/app/tui/__init__.py                 → (none)
 src/app/tui/app.py                      → app.session, app.tui.clipboard, app.tui.commands,
                                            app.tui.event_consumer,
@@ -86,80 +81,97 @@ src/app/tui/screens/workspace_manager.py→ app.tui.file_picker, app.tui.screens
 src/app/tui/screens/file_ingest.py      → app.tui.file_picker
 src/app/tui/screens/workspace_modal.py  → (none)
 
-src/harness/__init__.py                 → harness.app_store, harness.paths, harness.workspace
+# --- Shared contracts (src/harness/ root) ---
+src/harness/__init__.py                 → harness.core.app_store, harness.core.paths,
+                                           harness.core.workspace
+src/harness/control.py                  → (none)
+src/harness/events.py                   → harness.status, runtime.types, worker.models
+src/harness/exceptions.py               → (none)
+src/harness/status.py                   → runtime.types
+src/harness/orchestrator.py             → harness.control, harness.events, harness.exceptions,
+                                           harness.status,
+                                           harness.core.analysis_flow, harness.core.command_registry,
+                                           harness.core.persistence, harness.core.state_machine,
+                                           harness.services.analysis, harness.services.chat,
+                                           harness.services.context, harness.services.doctor,
+                                           harness.services.knowledge, harness.services.mode_router,
+                                           harness.services.prompt_profiles, harness.services.workspace,
+                                           harness.services.workspace_files,
+                                           harness.commands.* (chat, compact, diagnostics, doctor,
+                                            memory, provenance, run, workspace; imported lazily inside
+                                            _register_commands),
+                                           harness.tools.analysis, harness.tools.control,
+                                           harness.tools.file, harness.tools.knowledge,
+                                           harness.tools.registry,
+                                           observability, runtime.protocol, runtime.types,
+                                           worker.executor, worker.models, worker.policy
+                                           (knowledge_intents imported only by harness.tools.knowledge)
+
+# --- Harness Core kernel (src/harness/core/) — must NOT import harness.services.* ---
+src/harness/core/__init__.py            → (none; empty marker)
+src/harness/core/analysis_flow.py       → (none)
+src/harness/core/app_store.py           → (none)
+src/harness/core/approval.py            → (none)
+src/harness/core/command_registry.py    → harness.events
+src/harness/core/db.py                  → (none)
+src/harness/core/factory.py             → harness.core.db, harness.core.persistence,
+                                           harness.orchestrator, harness.services.context,
+                                           harness.services.doctor, harness.services.knowledge,
+                                           observability, runtime.protocol, worker.executor
+src/harness/core/fingerprints.py        → (none)
+src/harness/core/paths.py               → (none)
+src/harness/core/persistence.py         → harness.control, harness.core.db, observability,
+                                           observability.events
+src/harness/core/prompt_registry.py     → (none)
+src/harness/core/state_machine.py       → harness.control
+src/harness/core/validity.py            → (none)
+src/harness/core/workspace.py           → harness.core.app_store, harness.core.paths
+
+# --- Harness services (src/harness/services/) ---
+src/harness/services/__init__.py        → harness.services.analysis, harness.services.doctor,
+                                           harness.services.mode_router,
+                                           harness.services.prompt_profiles,
+                                           harness.services.workspace_files
+src/harness/services/analysis.py        → harness.control, harness.events, worker.models,
+                                           worker.policy
+src/harness/services/chat.py            → harness.exceptions, runtime.protocol, runtime.types
+src/harness/services/context.py         → (none)
+src/harness/services/doctor.py          → harness.control, harness.events,
+                                           harness.core.fingerprints, harness.core.persistence,
+                                           harness.core.validity, harness.services.chat,
+                                           harness.services.knowledge, runtime.protocol, runtime.types
+src/harness/services/knowledge.py       → harness.control, harness.core.persistence
+src/harness/services/knowledge_intents.py → (none)
+src/harness/services/mode_router.py     → observability, observability.events
+src/harness/services/prompt_profiles.py → harness.tools.registry
+src/harness/services/provenance.py      → harness.core.db
+src/harness/services/repair.py          → (none)
+src/harness/services/workspace.py       → harness.core.app_store, harness.core.workspace,
+                                           harness.exceptions, harness.services.chat
+src/harness/services/workspace_files.py → harness.services.context
+
+# --- Harness commands package (src/harness/commands/) ---
 src/harness/commands/__init__.py        → harness.commands.chat, harness.commands.compact,
                                            harness.commands.diagnostics, harness.commands.doctor,
                                            harness.commands.memory, harness.commands.provenance,
                                            harness.commands.run, harness.commands.workspace
-src/harness/commands/chat.py            → harness.command_registry
-src/harness/commands/compact.py         → harness.command_registry
-src/harness/commands/diagnostics.py     → harness.command_registry
-src/harness/commands/doctor.py          → harness.command_registry
-src/harness/commands/memory.py          → harness.command_registry
-src/harness/commands/provenance.py      → harness.command_registry
-src/harness/commands/run.py             → harness.command_registry
-src/harness/commands/workspace.py       → harness.command_registry
-src/harness/services/__init__.py        → harness.services.analysis, harness.services.doctor,
-                                           harness.services.workspace_files
-src/harness/services/analysis.py        → harness.control, harness.events, worker.models,
-                                           worker.policy
-src/harness/services/doctor.py          → harness.events, harness.fingerprints,
-                                           harness.knowledge, harness.validity, runtime.types
-src/harness/services/workspace_files.py → harness.context
+src/harness/commands/chat.py            → harness.core.command_registry, harness.orchestrator
+src/harness/commands/compact.py         → harness.core.command_registry, harness.orchestrator
+src/harness/commands/diagnostics.py     → harness.core.command_registry, harness.orchestrator
+src/harness/commands/doctor.py          → harness.core.command_registry, harness.orchestrator
+src/harness/commands/memory.py          → harness.core.command_registry, harness.orchestrator
+src/harness/commands/provenance.py      → harness.core.command_registry, harness.orchestrator
+src/harness/commands/run.py             → harness.core.command_registry, harness.orchestrator
+src/harness/commands/workspace.py       → harness.core.command_registry, harness.orchestrator
+
+# --- Harness tools package (src/harness/tools/) ---
 src/harness/tools/__init__.py           → harness.tools.registry
 src/harness/tools/analysis.py           → harness.events, harness.tools.registry
 src/harness/tools/control.py            → harness.events, harness.tools.registry
-src/harness/tools/file.py              → harness.events, harness.tools.registry
-src/harness/tools/knowledge.py          → harness.command_registry, harness.events,
-                                           harness.knowledge_intents, harness.tools.registry
-src/harness/tools/registry.py          → re, harness.events
-src/harness/analysis_flow.py            → (none)
-src/harness/app_store.py                → (none)
-src/harness/approval.py                 → (none)
-src/harness/chat.py                     → harness.exceptions, runtime.types
-src/harness/command_registry.py         → harness.events
-src/harness/commands.py                 → harness.command_registry
-src/harness/context.py                  → (none)
-src/harness/control.py                  → (none)
-src/harness/db.py                       → (none)
-src/harness/doctor.py                   → harness.services.doctor
-src/harness/doctor_runner.py            → harness.services.doctor
-src/harness/events.py                   → harness.status, runtime.types, worker.models
-src/harness/exceptions.py               → (none)
-src/harness/factory.py                  → harness.context, harness.db, harness.knowledge,
-                                           harness.orchestrator, harness.persistence,
-                                           harness.services.doctor, observability, runtime.protocol,
-                                           worker.executor
-src/harness/fingerprints.py             → (none)
-src/harness/knowledge.py                → harness.control, harness.persistence
-src/harness/orchestrator.py             → harness.chat, harness.command_registry,
-                                           harness.commands.* (chat, compact, diagnostics, doctor,
-                                            memory, provenance, run, workspace; imported lazily inside
-                                            _register_commands), harness.context,
-                                           harness.analysis_flow,
-                                           harness.control, harness.events, harness.exceptions,
-                                           harness.knowledge, harness.services.analysis,
-                                           harness.services.doctor, harness.services.workspace_files,
-                                           harness.persistence,
-                                           harness.state_machine, harness.status, harness.tools.analysis,
-                                           harness.tools.control, harness.tools.file,
-                                           harness.tools.knowledge, harness.tools.registry,
-                                           harness.workspace_async,
-                                           (KNOWLEDGE_INTENTS bypass removed; knowledge_intents now
-                                            imported only by harness.tools.knowledge)
-                                           observability, runtime.protocol, runtime.types,
-                                           worker.executor, worker.models, worker.policy
-src/harness/paths.py                    → (none)
-src/harness/persistence.py              → harness.control, harness.db
-src/harness/prompt_registry.py          → (none)
-src/harness/provenance.py               → (TYPE_CHECKING harness.db)
-src/harness/repair.py                   → (none)
-src/harness/state_machine.py            → harness.control
-src/harness/status.py                   → runtime.types
-src/harness/validity.py                 → (none)
-src/harness/workspace.py                → harness.app_store, harness.paths
-src/harness/workspace_async.py          → harness.app_store, harness.chat, harness.exceptions,
-                                           harness.workspace
+src/harness/tools/file.py               → harness.events, harness.tools.registry
+src/harness/tools/knowledge.py          → harness.events, harness.services.knowledge_intents,
+                                           harness.tools.registry
+src/harness/tools/registry.py           → re, harness.events
 
 src/runtime/__init__.py                 → runtime.config
 src/runtime/bridge.py                   → runtime.types
@@ -195,19 +207,19 @@ src/worker/sandbox_bootstrap.py         → (subprocess; no static src.* imports
 - runtime/tool_calls: `ParsedToolCall`; `extract_fenced_code` (gen-2 fenced ```` ```python ```` → code lines)
 - observability/events: `TelemetryEvent`
 - worker/models: `ResourceLimits`, `PermissionEnvelope`, `StepExecutionRequest`, `ExecutionEnvelope`, `StepTaskHandle`, `StepTaskStatus`, `StepExecutionEnvelope`
-- harness/app_store: `AppStore`
-- harness/chat: `ChatMessage`, `ChatRecord`, `ChatSummary`, `ChatDeleteResult`
-- harness/command_registry: `ArgSpec`, `CommandContext`, `HarnessCommandDescriptor`, `HelpResult`
+- harness/core/app_store: `AppStore`
+- harness/services/chat: `ChatMessage`, `ChatRecord`, `ChatSummary`, `ChatDeleteResult`
+- harness/core/command_registry: `ArgSpec`, `CommandContext`, `HarnessCommandDescriptor`, `HelpResult`
 - harness/tools/registry: `ToolContext`, `ToolArgSpec`, `ToolDescriptor`
 - harness/control: `HarnessRecord`, `ValidationFailure`, `SessionConfig`
 - harness/events: `HarnessEvent`, `HarnessEventRef`, + all `*Event` subclasses
-- harness/paths: `AppPaths`, `WorkspacePaths`
-- harness/provenance: `ProvenanceRecord`
+- harness/core/paths: `AppPaths`, `WorkspacePaths`
+- harness/services/provenance: `ProvenanceRecord`
 - harness/status: `HarnessEventRefPayload`, `HarnessStatusSnapshot`
-- harness/workspace_async: `WorkspaceSummary`, `WorkspaceIngestResult`
+- harness/services/workspace: `WorkspaceSummary`, `WorkspaceIngestResult`
+- harness/services/mode_router: `ProfileDecision`
+- harness/services/prompt_profiles: `PromptPackage` (mode/template_version/prompt_text/package_hash)
 - app/events: `AppEvent`
-- app/agents/types: `PromptPackage`
-- app/agents/router: `AgentModeRequest`
 - app/tui/models: `WorkspaceView`, `AppView`
 
 **`HarnessRecord(BaseModel)` chain** (harness/control.py):
@@ -221,13 +233,13 @@ src/worker/sandbox_bootstrap.py         → (subprocess; no static src.* imports
 
 **Exception hierarchies:**
 - `HarnessError(Exception)` (harness/exceptions.py) ← `ChatNotFound`, `ChatWorkspaceMismatch`, `ChatActiveDeletionBlocked`, `WorkspaceNotFound`, `RunAlreadyActive`, `WorkspaceSwitchBlocked`
-- `ValueError` ← `ToolCallParseError` (runtime/tool_calls), `RuntimeInputError`/`ModelBehaviorError` (runtime/types), `WorkerPolicyError` (worker/policy), `InvalidTransition` (harness/state_machine)
+- `ValueError` ← `ToolCallParseError` (runtime/tool_calls), `RuntimeInputError`/`ModelBehaviorError` (runtime/types), `WorkerPolicyError` (worker/policy), `InvalidTransition` (harness/core/state_machine)
 - `RuntimeError` ← `TmpCleanupBlocked` (harness/services/doctor)
-- `PermissionError` ← `MemoryWriteForbidden` (harness/knowledge)
+- `PermissionError` ← `MemoryWriteForbidden` (harness/services/knowledge)
 
 **StrEnum subclasses:**
 - `RunState`, `ValidationFailureKind` (harness/control)
-- `ValidityState` (harness/validity)
+- `ValidityState` (harness/core/validity)
 - `ExecutionStatus`, `FailureKind` (worker/models)
 - `RunState`, `ActiveMode`, `WorkspaceStatus`, `ResultState` (app/tui/models — note: distinct from harness `RunState`)
 
@@ -248,26 +260,27 @@ src/worker/sandbox_bootstrap.py         → (subprocess; no static src.* imports
 
 **Other:**
 - `logging.Filter` ← `TelemetryContextFilter` (observability/logging_setup)
-- `Protocol` ← `Runtime` (runtime/protocol), `Helpable` (app/tui/help), `KnowledgeManagerProtocol` (harness/knowledge_intents)
-- `NamedTuple` ← `FingerprintResult` (harness/fingerprints), `JumpInfo` (app/tui/jump)
-- frozen `dataclass` ← `RepairResult` (harness/repair), `ActiveWorkspace` (harness/workspace), `_TaskRecord` (worker/executor)
+- `Protocol` ← `Runtime` (runtime/protocol), `Helpable` (app/tui/help), `KnowledgeManagerProtocol` (harness/services/knowledge_intents)
+- `NamedTuple` ← `FingerprintResult` (harness/core/fingerprints), `JumpInfo` (app/tui/jump)
+- frozen `dataclass` ← `RepairResult` (harness/services/repair), `ActiveWorkspace` (harness/core/workspace), `_TaskRecord` (worker/executor)
 
 ### Index C — Cross-file Call/Usage Map (selected hot paths)
 
 **`Orchestrator` (harness/orchestrator.py) is the hub:**
-- Builds: `ChatStore`, `ChatCompactor`, `RuntimeRequestBuilder` (chat.py); `Doctor`, `DoctorRunner` (services/doctor.py); `AnalysisService` (services/analysis.py); `WorkspaceFileService` (services/workspace_files.py); `ContextManager` (context.py); `HarnessStateMachine` (state_machine.py); `StatusBroker` (status.py); `AsyncWorkspaceManager` (workspace_async.py); `HarnessCommandRegistry` (command_registry.py); `HarnessToolRegistry` (tools/registry.py); `HarnessPersistence` (persistence.py); optional `KnowledgeManager` (knowledge.py)
+- Builds: `ModeRouter` (services/mode_router.py) and `PromptProfileRegistry` (services/prompt_profiles.py) in `__init__` (`self.mode_router`/`self.prompt_profiles`); `ChatStore`, `ChatCompactor`, `RuntimeRequestBuilder` (services/chat.py); `Doctor`, `DoctorRunner` (services/doctor.py); `AnalysisService` (services/analysis.py); `WorkspaceFileService` (services/workspace_files.py); `ContextManager` (services/context.py); `HarnessStateMachine` (core/state_machine.py); `StatusBroker` (status.py); `AsyncWorkspaceManager` (services/workspace.py); `HarnessCommandRegistry` (core/command_registry.py); `HarnessToolRegistry` (tools/registry.py); `HarnessPersistence` (core/persistence.py); optional `KnowledgeManager` (services/knowledge.py)
+- Routes internally: `_select_profile(state, *, chat_id, user_input) -> str` calls `mode_router.route()`, keeps the prior non-interaction profile on ambiguous (`interaction`) routing, writes `state.active_agent_mode` IN PLACE on the live `RunStateRecord`, returns the mode; `run_agentic_turn` calls it and loads the package via `prompt_profiles.load(mode)`. `run_agentic_turn` has NO `requested_mode`/`prompt_provider` params; `run_turn` keeps an internal optional `requested_mode: str | None = None` (and `prompt_text`); `resume_with_clarification` carries `active_agent_mode` forward
 - Has `tool_registry: HarnessToolRegistry` (initialized in `__init__`); `_register_tools()` wires `file_read` via `make_file_read_handler` (delegating to `WorkspaceFileService`), the `CONTROL_TOOL_NAMES` (`family="control"`) via `make_control_handler`, the model-facing analysis family (`analysis_plan`, `analysis_request_execution`) via `make_analysis_plan_handler` / `make_analysis_request_execution_handler` (delegating to `AnalysisService`), and the model-facing knowledge family (`knowledge_recall`, `knowledge_propose_update`) via `make_knowledge_recall_handler`/`make_knowledge_propose_update_handler`. `_dispatch_tool_call()` resolves handler/validate via `tool_registry` only (no `command_registry` fallback, no legacy `plan_analysis` alias, no special-cased `KNOWLEDGE_INTENTS` bypass), builds `ToolContext(chat_id=<active chat_id>)`, and re-yields handler events
 - Has `registry: HarnessCommandRegistry`; `_register_commands()` no longer holds inline descriptors — it lazily imports and delegates to family registrars in `harness.commands.*`: `register_doctor_commands` (doctor), `register_compact_commands` (compact), `register_diagnostics_commands` (help), `register_chat_commands` (create/list/view/resume/delete_chat), `register_workspace_commands` (workspace + list_files/inspect_file/read_file), `register_run_commands` (plan_analysis, request_execution, cancel_run, stop_after_current_step, revise_goal, retry_step, rerun_step, mark_result_trusted/invalidated, challenge_conclusion), `register_memory_commands` (memory_review, recall_knowledge), `register_provenance_commands` (inspect_artifact, provenance_inspect, validity_inspect). Legacy names such as `plan_analysis`, `request_execution`, `workspace_status`, and `workspace_inventory` remain Layer-4/user commands only and are not model-callable tools
 - Yields: every `HarnessEvent` subclass from harness/events.py
 - Consumed by: `app.session.AppSession` (Layer 4 facade)
 
 **`AppSession` (app/session.py):**
-- Wraps `Orchestrator` (no direct runtime imports per layer rule)
-- Calls: `AgentModeRouter.route()`, `PromptPackageRegistry.load()`, `to_app_event()`
-- Calls `Orchestrator.run_agentic_turn()` for user turns and wraps doctor command output with narration/approval events.
+- Thin Layer 4 facade over `Orchestrator` (no `app.agents` import, no `runtime.*` import)
+- Calls: `to_app_event()`; forwards `run_agentic_turn`, `handle_direct_command` (pure passthrough), `handle_doctor_approval`, and the other orchestrator methods, mapping `HarnessEvent` → `AppEvent`
+- Does NOT route intents or select prompts (Layer 3 owns that); doctor narration/approval events now originate in Layer 3 `DoctorRunner`, not `AppSession`
 - Used by: `DataHarnessApp` (app/tui/app.py) — instantiated in `cli.build_app`
 
-**`build_orchestrator` (harness/factory.py)** is the only entry point that wires Layer 3 dependencies; called by `cli.build_app`.
+**`build_orchestrator` (harness/core/factory.py)** is the only entry point that wires Layer 3 dependencies; called by `cli.build_app`.
 
 **`LlamaCppRuntime.stream` (runtime/llama_cpp_runtime.py)** uses:
 - `SyncToAsyncBridge` (runtime/bridge.py) to wrap blocking llama iterator
@@ -282,24 +295,24 @@ src/worker/sandbox_bootstrap.py         → (subprocess; no static src.* imports
 - Used by `Orchestrator.resume_approved_step` (when wired) — currently invoked indirectly through code execution flow
 
 **`Doctor.run` / `DoctorRunner.run` (harness/services/doctor.py):**
-- Uses `lazy_fingerprint` (harness/fingerprints.py) → returns `FingerprintResult`
-- Uses `classify` + `ValidityState` (harness/validity.py)
-- Persists via `HarnessPersistence` (harness/persistence.py)
+- Uses `lazy_fingerprint` (harness/core/fingerprints.py) → returns `FingerprintResult`
+- Uses `classify` + `ValidityState` (harness/core/validity.py)
+- Persists via `HarnessPersistence` (harness/core/persistence.py)
 - `DoctorRunner` emits deterministic source/tmp/pending-plan checks in `light/full` modes and runtime-backed semantic memory/script checks in `semantic/full` modes.
 - Workspace activation runs a light doctor pass; successful worker completion schedules a semantic doctor pass.
 
-**`KnowledgeManager.propose_update` (harness/knowledge.py):**
+**`KnowledgeManager.propose_update` (harness/services/knowledge.py):**
 - Returns `MemoryUpdateProposal` (harness/control.py)
 - `guarded_external_memory_write` enforces single-writer rule (always raises elsewhere)
-- Called from `harness.knowledge_intents.handle_knowledge_intent`
+- Called from `harness.services.knowledge_intents.handle_knowledge_intent`
 - Also owns direct memory writes for doctor/knowledge workflows: notes, gaps, functions, preferences, and turn-id dedup metadata.
 
-**`ChatStore` (harness/chat.py):**
+**`ChatStore` (harness/services/chat.py):**
 - `cascade_delete_for_workspace` invoked by `AsyncWorkspaceManager.delete_workspace`
 - `RuntimeRequestBuilder.build_messages` consumes `ChatRecord` → emits `RuntimeMessage` list (runtime/types) for `Runtime.stream`
 - `ChatCompactor.compact` driven by `Orchestrator.compact_chat_history` and token-pressure auto-compaction inside `run_turn`
 
-**`Telemetry.emit` (observability/telemetry.py)** is called from: `LlamaCppRuntime`, `PythonStepExecutor`, `HarnessPersistence` (save_dict), `AgentModeRouter._emit_decision`, `DataHarnessApp._emit`, and CLI bootstrap.
+**`Telemetry.emit` (observability/telemetry.py)** is called from: `LlamaCppRuntime`, `PythonStepExecutor`, `HarnessPersistence` (save_dict), `ModeRouter` (route decision telemetry at `Layer.HARNESS`), `DataHarnessApp._emit`, and CLI bootstrap.
 
 **Event flow user → screen:**
 ```
@@ -308,8 +321,8 @@ user keystroke
   → DataHarnessApp.submit_user_text
   → DataHarnessApp._stream_turn
   → AppSession.run_user_turn
-  → AgentModeRouter.route + PromptPackageRegistry.load
   → Orchestrator.run_agentic_turn
+  → Orchestrator._select_profile (ModeRouter.route + continuity + write-back) + prompt_profiles.load
   → Orchestrator.run_turn
   → RuntimeRequestBuilder.build_messages
   → LlamaCppRuntime.stream (yields RuntimeEvent)
@@ -344,13 +357,16 @@ slash text or palette selection
 | `Doctor` / `DoctorRunner` | `src/harness/services/doctor.py` |
 | `AnalysisService` | `src/harness/services/analysis.py` |
 | `WorkspaceFileService` | `src/harness/services/workspace_files.py` |
-| `ChatStore` / `ChatCompactor` / `RuntimeRequestBuilder` | `src/harness/chat.py` |
-| `KnowledgeManager` | `src/harness/knowledge.py` |
-| `WorkspaceManager` (sync) | `src/harness/workspace.py` |
-| `AsyncWorkspaceManager` | `src/harness/workspace_async.py` |
-| `AppStore` | `src/harness/app_store.py` |
-| `HarnessStateMachine` | `src/harness/state_machine.py` |
-| `HarnessCommandRegistry` | `src/harness/command_registry.py` |
+| `ChatStore` / `ChatCompactor` / `RuntimeRequestBuilder` | `src/harness/services/chat.py` |
+| `KnowledgeManager` | `src/harness/services/knowledge.py` |
+| `WorkspaceManager` (sync) / `bootstrap_workspace` | `src/harness/core/workspace.py` |
+| `AsyncWorkspaceManager` | `src/harness/services/workspace.py` (ex-`workspace_async`, renamed) |
+| `WorkspaceFileService` | `src/harness/services/workspace_files.py` |
+| `ModeRouter` / `ProfileDecision` | `src/harness/services/mode_router.py` |
+| `PromptProfileRegistry` / `PromptPackage` / `MODE_TOOL_NAMES` / `_tool_catalog` | `src/harness/services/prompt_profiles.py` |
+| `AppStore` | `src/harness/core/app_store.py` |
+| `HarnessStateMachine` | `src/harness/core/state_machine.py` |
+| `HarnessCommandRegistry` | `src/harness/core/command_registry.py` |
 | `HarnessToolRegistry` | `src/harness/tools/registry.py` |
 | `ToolContext` | `src/harness/tools/registry.py` |
 | `ToolArgSpec` | `src/harness/tools/registry.py` |
@@ -370,8 +386,8 @@ slash text or palette selection
 | `register_provenance_commands` | `src/harness/commands/provenance.py` |
 | `register_run_commands` | `src/harness/commands/run.py` |
 | `register_workspace_commands` | `src/harness/commands/workspace.py` |
-| `HarnessPersistence` | `src/harness/persistence.py` |
-| `WorkspaceDb` | `src/harness/db.py` |
+| `HarnessPersistence` | `src/harness/core/persistence.py` |
+| `WorkspaceDb` | `src/harness/core/db.py` |
 | `StatusBroker` / `HarnessStatusSnapshot` | `src/harness/status.py` |
 | `Telemetry` | `src/observability/telemetry.py` |
 | `TelemetryEvent` / `Layer` / `Outcome` / `EventKind` | `src/observability/events.py` |
@@ -382,10 +398,7 @@ slash text or palette selection
 | `parse_tool_call_block` / `repair_tool_call_block` | `src/runtime/tool_calls.py` |
 | `StepExecutionRequest` / `StepExecutionEnvelope` / `ExecutionEnvelope` | `src/worker/models.py` |
 | `PermissionEnvelope` / `ResourceLimits` | `src/worker/models.py` |
-| `AgentModeRouter` | `src/app/agents/router.py` |
-| `PromptPackageRegistry` | `src/app/agents/prompt_packages.py` |
-| `AnalystMode` / `KnowledgeMode` / `InteractionMode` | `src/app/agents/{analyst,knowledge,interaction}.py` |
-| `handle_knowledge_intent` | `src/harness/knowledge_intents.py` |
+| `handle_knowledge_intent` / `KnowledgeManagerProtocol` | `src/harness/services/knowledge_intents.py` |
 | `to_app_event` | `src/app/event_mapping.py` |
 | `EventConsumer` | `src/app/tui/event_consumer.py` |
 | `ClipboardProvider` / `NativeClipboard` | `src/app/tui/clipboard.py` |
@@ -405,17 +418,18 @@ slash text or palette selection
 | `Jumper` / `JumpOverlay` | `src/app/tui/jump.py` |
 | `RunTrace` | `src/app/tui/run_trace.py` |
 | `DataHarnessCommandProvider` / `build_command_prefill` | `src/app/tui/commands.py` |
-| `build_orchestrator` | `src/harness/factory.py` |
+| `build_orchestrator` | `src/harness/core/factory.py` |
 | `_dispatch_private_module` / `build_app` / `main` | `src/cli.py` |
-| `bootstrap_workspace` | `src/harness/workspace.py` |
-| `lazy_fingerprint` / `sha256_file` | `src/harness/fingerprints.py` |
-| `classify` / `ValidityState` | `src/harness/validity.py` |
-| `ContextManager` | `src/harness/context.py` |
-| `try_deterministic_repair` / `RepairResult` | `src/harness/repair.py` |
-| `ProvenanceRecord` / `ClaimChecker` / `reuse_allowed_for_source` | `src/harness/provenance.py` |
-| `TimedDecisionGate` | `src/harness/approval.py` |
-| `HarnessPromptRegistry` | `src/harness/prompt_registry.py` |
-| `parse_slash` | `src/harness/command_registry.py` |
+| `lazy_fingerprint` / `sha256_file` | `src/harness/core/fingerprints.py` |
+| `classify` / `ValidityState` | `src/harness/core/validity.py` |
+| `ContextManager` | `src/harness/services/context.py` |
+| `try_deterministic_repair` / `RepairResult` | `src/harness/services/repair.py` |
+| `ProvenanceRecord` / `ClaimChecker` / `reuse_allowed_for_source` | `src/harness/services/provenance.py` |
+| `TimedDecisionGate` | `src/harness/core/approval.py` |
+| `HarnessPromptRegistry` | `src/harness/core/prompt_registry.py` |
+| `parse_slash` | `src/harness/core/command_registry.py` |
+| `AppPaths` / `WorkspacePaths` | `src/harness/core/paths.py` |
+| `AnalysisFlow` / `AnalysisPhase` | `src/harness/core/analysis_flow.py` |
 | `redact_payload` | `src/observability/redaction.py` |
 | `configure_logging` / `TelemetryContextFilter` | `src/observability/logging_setup.py` |
 | `resolve_app_root` / `resolve_log_dir` / `resolve_telemetry_dir` | `src/observability/runtime_paths.py` |
@@ -495,84 +509,56 @@ Module marker only.
 
 ### `src/app/session.py`
 **Imports:**
-- `app.agents.prompt_packages.PromptPackageRegistry`
-- `app.agents.router.AgentModeRouter`
-- `app.event_mapping.to_app_event`
-- `app.events.*`, `harness.events.{DoctorNarrationReady, DoctorActionsApplied}`, `harness.status.HarnessStatusSnapshot`
+- `app.event_mapping.to_app_event`, `app.events.AppEvent`
+- `harness.core.command_registry.{CommandContext, HarnessCommandDescriptor, HelpResult}`
+- `harness.control.RunStateRecord`, `harness.exceptions.RunAlreadyActive`
+- `harness.orchestrator.Orchestrator`, `harness.status.HarnessStatusSnapshot`
+- `observability.{Telemetry, bind_turn, resolve_telemetry_dir}`, `observability.events.{EventKind, Layer}`
+- (no `app.agents` import — package deleted; no `runtime.*` import)
 **Defines:**
-- **class** `AppSession` — Layer 4 async-only facade over `Orchestrator`
-  - `__init__(orchestrator, mode_router, prompt_registry, telemetry, app_root)`
-  - `run_user_turn(state, workspace_dir, chat_id, user_text)` — async iter `AppEvent`; routes mode → loads prompt → `orchestrator.run_agentic_turn` → maps events
-  - `resume_approved_step(...)` — after approval modal
-  - `resume_with_clarification(...)` — after clarification modal
-  - `handle_direct_command(state, command, arguments)` — slash commands
-  - `_stream_doctor_narration_and_approval(...)`, `handle_doctor_approval(..., action_ids=None)` — app-owned doctor narration/confirmation wrapping Layer 3 doctor events
-  - `_collect_tmp_actions(report)`, `_render_doctor_narration(...)`, `_fallback_doctor_narration(...)`
-  - `cancel_run(run_id, reason)`
-  - `compact_chat_history(chat_id)`
+- **class** `AppSession` — thin Layer 4 async-only facade over `Orchestrator`
+  - `__init__(*, orchestrator=None, telemetry=None, app_root=None)` — no `mode_router`/`prompt_registry` params (routing/prompts are Layer 3)
+  - `run_user_turn(*, state, workspace_dir, chat_id, user_text)` — async iter `AppEvent`; sets `_active` gate, calls `orchestrator.run_agentic_turn(state, workspace_dir=, chat_id=, user_input=)` (no requested_mode/prompt_provider), maps events
+  - `resume_approved_step(...)`, `resume_with_clarification(...)` — forward to orchestrator
+  - `handle_direct_command(state, *, command, arguments)` — PURE passthrough to `orchestrator.handle_direct_command` + event map (no doctor narration wrapping)
+  - `handle_doctor_approval(*, state, workspace_dir, report_id, decision, action_ids=None)` — forwards to `orchestrator.apply_doctor_actions`
+  - `cancel_run` / `compact_chat_history`
   - `list_commands` / `help` / `list_chats` / `create_chat` / `view_chat` / `resume_chat` / `delete_chat`
   - `list_workspaces` / `create_workspace` / `rename_workspace` / `delete_workspace` / `activate_workspace` / `ingest_files`
   - `status_snapshot` / `watch_status`
 - **var** `DataAnalysisAppSession = AppSession` — back-compat alias
 **Internal calls:**
-- `AgentModeRouter.route`, `PromptPackageRegistry.load`, `to_app_event`
-- `Orchestrator.*` (delegates most ops), `Orchestrator.run_agentic_turn`, `Orchestrator.apply_doctor_actions`
+- `to_app_event`; `Orchestrator.*` (delegates all ops); `Orchestrator.run_agentic_turn`, `Orchestrator.apply_doctor_actions`
 **Notes:**
-- `_active` flag prevents concurrent runs at the session level (orchestrator also enforces)
+- `_active` flag prevents concurrent runs at the session level (orchestrator also enforces). No routing, no prompt selection, no doctor narration here — all moved to Layer 3.
 
-### `src/app/agents/__init__.py`
-Re-exports `PromptPackageRegistry`, `AgentModeRouter`.
+(There is no `src/app/agents/` package. Routing is `harness.services.mode_router.ModeRouter`; prompt assembly is `harness.services.prompt_profiles.PromptProfileRegistry`. The former `AgentModeRouter`/`PromptPackageRegistry`/`AnalystMode`/`KnowledgeMode`/`InteractionMode` and `app.agents.types.PromptPackage` no longer exist.)
 
-### `src/app/agents/types.py`
-**Defines:**
-- **class** `PromptPackage(BaseModel)` — `mode`, `template_version`, `prompt_text`, `package_hash`
-
-### `src/app/agents/router.py`
-**Defines:**
-- **class** `AgentModeRequest(BaseModel)` — `mode`, `reason`
-- **var** `AgentModeDecision = AgentModeRequest`
-- **class** `AgentModeRouter` — keyword-based mode classifier
-  - `request_mode` (alias of `route`)
-  - `route(user_text) -> AgentModeRequest` — punctuation-normalizing tokenize, match against `analysis_terms`/`transformation_terms`/`knowledge_terms`, default to `interaction`
-  - `_phrase_match(normalized)`, `_transformation_match(normalized, words)` — detect analytical phrases and workspace/column/rule transformation intent
-  - `_emit_decision(decision, user_text)` — telemetry
-- **var** `analysis_terms` / `transformation_terms` / `workspace_reference_patterns` / `knowledge_terms` — keyword and data-reference sets
-**Notes:** stateless; called by `AppSession.run_user_turn`
-
-### `src/app/agents/prompt_packages.py`
-**Imports:** `app.agents.types.PromptPackage`, `harness.tools.registry.HarnessToolRegistry`
-**Defines:**
-- **var** `MODE_TOOL_NAMES` — dict `mode → registered model-facing tool names`
-- **func** `_tool_catalog(mode, tool_registry) -> str` — markdown built from `tool_registry.list_tools()` (tool sigs) + mode tool-name subset
-- **class** `PromptPackageRegistry`
-  - `__init__(prompts_dir, *, tool_registry=None)`
-  - `load(mode) -> PromptPackage` — loads `system.md`+`mode.md`+catalog+`response_format.md`, sha256 hash
-**Notes:** prompt assembly on demand; called by mode builders + `AppSession`
-
-### `src/app/agents/analyst.py`
-**Imports:** `app.agents.prompt_packages.PromptPackageRegistry`
-**Defines:**
-- **class** `AnalystMode` — `build_turn(user_text) -> dict` returning prompt package + model-facing tool names
-**Notes:** allowed tool names: `analysis_plan`, `analysis_request_execution`, `file_read`, `knowledge_recall`, `respond_to_user`
-
-### `src/app/agents/knowledge.py`
-**Imports:** `app.agents.prompt_packages.PromptPackageRegistry`
-**Defines:**
-- **class** `KnowledgeMode` — `build_turn(user_text)`
-**Notes:** allowed tool names: `knowledge_recall`, `knowledge_propose_update`, `respond_to_user`, `request_clarification`
-
-### `src/app/agents/interaction.py`
-**Imports:** `app.agents.prompt_packages.PromptPackageRegistry`
-**Defines:**
-- **class** `InteractionMode` — default front-door builder
-**Notes:** intents: `answer_directly`, `handoff_to_analyst`, `handoff_to_knowledge`, `request_clarification`
-
-### `src/harness/knowledge_intents.py`
+### `src/harness/services/knowledge_intents.py`
 **Defines:**
 - **class** `KnowledgeManagerProtocol(Protocol)` — `propose_update(...)`
 - **func** `_slug(text) -> str` — kebab-case slug
 - **func** `handle_knowledge_intent(manager, tool_call) -> Any` — dispatch by intent → `manager.propose_update(...)` with target `memory/notes/{slug}.md`, `memory/preferences.json`, or `memory/functions/{slug}.py`
-**Notes:** invoked by orchestrator when LLM emits knowledge intents
+**Notes:** imported only by `harness.tools.knowledge` (knowledge writes flow through the `knowledge_propose_update` tool handler)
+
+### `src/harness/services/mode_router.py`
+**Imports:** `observability.{Telemetry, ...}`, `observability.events.{EventKind, Layer}`
+**Defines:**
+- **class** `ProfileDecision(BaseModel)` — `mode: str`, `reason: str`
+- **class** `ModeRouter` — keyword/LLM-fallback intent classifier
+  - `request_mode(user_text) -> ProfileDecision` — stable alias delegating to `route()`
+  - `route(user_text) -> ProfileDecision` — normalize/tokenize, match knowledge/analysis terms, optional cached LLM classifier, default `interaction`/`front_door_default`; emits telemetry at `Layer.HARNESS`
+**Notes:** Layer 3 service; built by `Orchestrator.__init__` as `self.mode_router`. Re-exported from `harness.services`.
+
+### `src/harness/services/prompt_profiles.py`
+**Imports:** `harness.tools.registry.HarnessToolRegistry`
+**Defines:**
+- **class** `PromptPackage(BaseModel)` — `mode`, `template_version`, `prompt_text`, `package_hash` (inline model; distinct from `harness/control.py` `PromptPackage(HarnessRecord)`)
+- **var** `MODE_TOOL_NAMES` — dict `mode → model-facing tool names`
+- **func** `_tool_catalog(mode, tool_registry) -> str` — markdown tool catalog for the mode
+- **class** `PromptProfileRegistry`
+  - `load(mode) -> PromptPackage` — assembles `system.md` + persona + tool catalog + `response_format.md` from `src/harness/prompts/`, `template_version="v1"`, sha256 `package_hash`
+**Notes:** Layer 3 service; built by `Orchestrator.__init__` as `self.prompt_profiles`. Re-exported from `harness.services`. Persona/operational prompts: `src/harness/prompts/{system,interaction,analyst,knowledge,clarification,response_format,doctor_narrator,compaction,doctor,knowledge_reconcile}.md`.
 
 ### `src/app/tui/__init__.py`
 Marker.
@@ -844,21 +830,27 @@ Re-exports `ApprovalScreen`, `ClarificationScreen` from `screens.py`.
 ## `src/harness/`
 
 ### `src/harness/__init__.py`
-Re-exports `AppStore`, `AppPaths`, `WorkspacePaths`, `ActiveWorkspace`, `WorkspaceManager`, `bootstrap_workspace`.
+Re-exports `AppStore`, `AppPaths`, `WorkspacePaths`, `ActiveWorkspace`, `WorkspaceManager`, `bootstrap_workspace` (now sourced from `harness.core.{app_store,paths,workspace}`).
 
-### `src/harness/app_store.py`
+### `src/harness/core/__init__.py`
+Empty package marker (no re-exports). Import kernel modules by full path, e.g. `harness.core.persistence`.
+
+### `src/harness/services/__init__.py`
+Re-exports `AnalysisService`, `Doctor`, `DoctorRunner`, `TmpCleanupBlocked`, `ModeRouter`, `ProfileDecision`, `PromptPackage`, `PromptProfileRegistry`, `WorkspaceFileService`.
+
+### `src/harness/core/app_store.py`
 **Defines:**
 - **class** `AppStore(BaseModel)` — known workspaces, recents, prefs
   - `load(cls, path)` (classmethod), `register_workspace`, `save`
 **Notes:** persisted at `app.json`; recency-ordered list
 
-### `src/harness/approval.py`
+### `src/harness/core/approval.py`
 **Defines:**
 - **class** `TimedDecisionGate` — 10s auto-proceed gate; code-execution NEVER auto-proceeds
   - `submit_user_decision(decision)`, `cancel`, `wait(*, eligible_for_auto_proceed, timeout_seconds)`
 
-### `src/harness/chat.py`
-**Imports:** `harness.exceptions.ChatNotFound`, `ChatWorkspaceMismatch`; `runtime.types.RuntimeMessage`, `RuntimeRequest`
+### `src/harness/services/chat.py`
+**Imports:** `harness.exceptions.ChatNotFound`, `ChatWorkspaceMismatch`; `runtime.protocol`; `runtime.types.RuntimeMessage`, `RuntimeRequest`
 **Defines:**
 - **class** `ChatMessage(BaseModel)`
 - **class** `ChatRecord(BaseModel)` — messages + metadata + compaction history
@@ -880,7 +872,7 @@ Re-exports `AppStore`, `AppPaths`, `WorkspacePaths`, `ActiveWorkspace`, `Workspa
 - Token budget split: 30% durable / 15% summary / 25% recent / 25% completion reserve
 - Compaction summaries use a DataHarness handoff shape. Runtime prompting is loaded from `src/harness/prompts/compaction.md`, and deterministic fallback preserves the same current user goal, durable progress/facts, workspace file references, constraints/preferences, and next steps while filtering role-prefixed transcript echoes and trivial greetings/test messages.
 
-### `src/harness/command_registry.py`
+### `src/harness/core/command_registry.py`
 **Imports:** `harness.events.HarnessEvent`
 **Defines:**
 - **type** `ArgType` (literal enum)
@@ -891,17 +883,15 @@ Re-exports `AppStore`, `AppPaths`, `WorkspacePaths`, `ActiveWorkspace`, `Workspa
   - `list_descriptors(ctx)`, `help(command)`, `validate(command, args)`, `get_handler(command)`
 - **func** `parse_slash(text) -> tuple[str, list[str]]` — positional-only per spec §8
 
-### `src/harness/commands.py`
-Re-exports `HarnessCommandRegistry`.
-
-### `src/harness/context.py`
+### `src/harness/services/context.py`
 **Defines:**
 - **class** `ContextManager`
   - `rebuild(*, workspace_dir, session_ledger, validity_states, chat_history) -> dict`
   - `compact(entries, *, active_plan_id, current_step_id, unresolved_failures) -> dict`
-**Notes:** loads `preferences.json` + all `memory/notes/*.md`
+- **func** `list_workspace_files`, `read_file_schema`
+**Notes:** loads `preferences.json` + all `memory/notes/*.md`. (`src/harness/context.py` shim deleted — import from `harness.services.context`.)
 
-### `src/harness/analysis_flow.py`
+### `src/harness/core/analysis_flow.py`
 **Defines (no internal imports; pydantic + stdlib only):**
 - **enum** `AnalysisPhase(StrEnum)` — inspecting/plan_pending/approval_pending/executing/done/failed
 - **class** `AnalysisFlow(BaseModel)` — Layer-3 per-chat analysis state (chat_id, run_id, workspace_id, phase, goal, plan_id, original_request, inspection_summary, force_attempts, timestamps); `is_terminal()`
@@ -920,7 +910,7 @@ Re-exports `HarnessCommandRegistry`.
 - **class** `StepContract(HarnessRecord)` — input paths must be workspace-relative
 - **class** `ExecutionEnvelope(HarnessRecord)` — note: distinct from `worker.models.ExecutionEnvelope`
 - **class** `StepResult(HarnessRecord)`
-- **class** `PromptPackage(HarnessRecord)` — distinct from `app.agents.types.PromptPackage`
+- **class** `PromptPackage(HarnessRecord)` — distinct from `harness.services.prompt_profiles.PromptPackage`
 - **class** `DoctorReport(HarnessRecord)`
 - **class** `TmpAction(HarnessRecord)` — delete/promote/keep
 - **class** `ReviewProposal(HarnessRecord)`, `MemoryUpdateProposal(HarnessRecord)`
@@ -928,7 +918,7 @@ Re-exports `HarnessCommandRegistry`.
 - **func** `classify_validation_error(*, payload, error, default_kind) -> ValidationFailure`
 - **class** `SessionConfig(BaseModel)`
 
-### `src/harness/db.py`
+### `src/harness/core/db.py`
 **Defines:**
 - **var** `AUTHORITATIVE_TABLES` — list[str] (18 tables)
 - **func** `_validate_key_name(key_name)` / `create_schema() -> str`
@@ -939,15 +929,7 @@ Re-exports `HarnessCommandRegistry`.
   - `load_record(...)`
   - `list_records(table) -> list[dict]` — full table scan
 
-### `src/harness/doctor.py`
-**Imports:** `harness.services.doctor`
-**Defines:** compatibility re-exports for `Doctor`, `PROMOTION_TARGETS`, `TmpCleanupBlocked`
-**Notes:** canonical implementation lives in `src/harness/services/doctor.py`.
-
-### `src/harness/doctor_runner.py`
-**Imports:** `harness.services.doctor`
-**Defines:** compatibility re-exports for `DoctorRunner`, `PHASES`
-**Notes:** canonical implementation lives in `src/harness/services/doctor.py`.
+(Deleted shims: `src/harness/doctor.py`, `src/harness/doctor_runner.py`, and `src/harness/commands.py` no longer exist. Canonical: `harness.services.doctor` for `Doctor`/`DoctorRunner`/`PHASES`/`PROMOTION_TARGETS`/`TmpCleanupBlocked`; `harness.core.command_registry` for `HarnessCommandRegistry`. The `src/harness/commands/` PACKAGE of real command modules is unrelated and still exists.)
 
 ### `src/harness/services/analysis.py`
 **Imports:** `harness.control.{Plan, PlanStep, RunStateRecord, StepContract}`; `harness.events.{ApprovalRequired, CommandCompleted, CommandProgress, CommandStarted, HarnessEvent, PlanReady}`; `worker.models.PermissionEnvelope`; `worker.policy.WorkerPolicyValidator`
@@ -963,7 +945,7 @@ Re-exports `HarnessCommandRegistry`.
 **Notes:** transitional service receives the owning `Orchestrator` for stateful registries and generation helpers.
 
 ### `src/harness/services/doctor.py`
-**Imports:** `harness.events.*`; `harness.fingerprints.lazy_fingerprint`; `harness.knowledge.KnowledgeManager`; `harness.validity.ValidityState, classify`; `runtime.types.{RuntimeMessage, RuntimeRequest}`
+**Imports:** `harness.control`; `harness.events.*`; `harness.core.fingerprints.lazy_fingerprint`; `harness.core.persistence`; `harness.core.validity.{ValidityState, classify}`; `harness.services.chat`; `harness.services.knowledge.KnowledgeManager`; `runtime.protocol`; `runtime.types.{RuntimeMessage, RuntimeRequest}`
 **Defines:**
 - **var** `PROMOTION_TARGETS` — kind→workspace-relative path
 - **class** `TmpCleanupBlocked(RuntimeError)`
@@ -984,10 +966,11 @@ Re-exports `HarnessCommandRegistry`.
   - `_classify_tmp_items(items)` — successful `step.py` → function promotion; failed step evidence → keep
   - `_read_step_result(path)`, `_event_action(action)`, `_category(phase)`
   - `_run_chat_knowledge_mining(...)`, `_run_script_assessment(...)`, `_run_consistency_check(...)` — runtime-backed semantic doctor phases
-**Notes:** spec §6.12 — cleanup follows persisted `TmpAction`.
+  - `_collect_tmp_actions(report_id)`, `_fallback_narration(findings_payload, action_summaries)`, `_render_narration(findings_payload, action_summaries)` (LLM via `doctor_narrator.md`, deterministic fallback), `_narrate_and_request_approval(report_id, chat_id, workspace_id, summary_counts, findings)` → yields `DoctorNarrationReady` + `DoctorApprovalRequested` (findings passed as a parameter, not instance state) — these moved here from Layer 4 `AppSession`; off-canonical, see `docs/app/doctor-behaviour.md`
+**Notes:** spec §6.12 — cleanup follows persisted `TmpAction`. LLM narration / approval-request emission is a Layer 3 off-canonical addition over the spec's required tmp-review approval gate.
 
 ### `src/harness/services/workspace_files.py`
-**Imports:** `harness.context.{list_workspace_files, read_file_schema}`
+**Imports:** `harness.services.context.{list_workspace_files, read_file_schema}`
 **Defines:**
 - **var** `READ_FILE_CHAR_CAP`
 - **class** `WorkspaceFileService`
@@ -1007,21 +990,21 @@ Re-exports `HarnessCommandRegistry`.
 ### `src/harness/exceptions.py`
 **Defines:** `HarnessError(Exception)` ← `ChatNotFound`, `ChatWorkspaceMismatch`, `ChatActiveDeletionBlocked`, `WorkspaceNotFound`, `RunAlreadyActive`, `WorkspaceSwitchBlocked`
 
-### `src/harness/factory.py`
-**Imports:** `harness.{context,db,doctor,knowledge,orchestrator,persistence}`; `observability.Telemetry`; `runtime.protocol.Runtime`; `worker.executor.PythonStepExecutor`
+### `src/harness/core/factory.py`
+**Imports:** `harness.core.db`, `harness.core.persistence`, `harness.orchestrator`, `harness.services.context`, `harness.services.doctor`, `harness.services.knowledge`; `observability`; `runtime.protocol.Runtime`; `worker.executor.PythonStepExecutor`
 **Defines:**
-- **func** `build_orchestrator(*, workspace_dir, runtime, telemetry) -> Orchestrator` — sole wiring point per spec §8.1
-**Notes:** Layer 4 must call this — never construct `Orchestrator` directly. Factory wires `KnowledgeManager` with the workspace dir/persistence so memory writes stay inside Layer 3.
+- **func** `build_orchestrator(*, workspace_dir, runtime, telemetry) -> Orchestrator` — sole wiring point
+**Notes:** Layer 4 must call this — never construct `Orchestrator` directly. Factory wires `KnowledgeManager` with the workspace dir/persistence so memory writes stay inside Layer 3. Kernel module that may import services (the wiring exception).
 
-### `src/harness/fingerprints.py`
+### `src/harness/core/fingerprints.py`
 **Defines:**
 - **class** `FingerprintResult(NamedTuple)` — action/fingerprint/size/mtime
 - **func** `sha256_file(path) -> str`
 - **func** `lazy_fingerprint(path, *, stored_size, stored_mtime_ns, stored_fingerprint) -> FingerprintResult` — fast path: reuse if metadata unchanged
 **Notes:** actions: `fingerprinted`, `reused_fingerprint`, `changed`, `missing`
 
-### `src/harness/knowledge.py`
-**Imports:** `harness.control.{MemoryUpdateProposal, utc_now}`; `harness.persistence.HarnessPersistence`
+### `src/harness/services/knowledge.py`
+**Imports:** `harness.control.{MemoryUpdateProposal, utc_now}`; `harness.core.persistence.HarnessPersistence`
 **Defines:**
 - **class** `MemoryWriteForbidden(PermissionError)`
 - **func** `guarded_external_memory_write(workspace_dir, relative_path, content)` — always raises (boundary enforcement)
@@ -1037,7 +1020,7 @@ Re-exports `HarnessCommandRegistry`.
 **Notes:** spec §6.13 + §10.8; reuse blocked unless source validity is `ok`/`revalidated`
 
 ### `src/harness/orchestrator.py`
-**Imports:** `harness.{analysis_flow, chat, command_registry, context, control, events, exceptions, knowledge, persistence, state_machine, status, workspace_async}`; `harness.services.{analysis, doctor, workspace_files}`; `harness.tools.*`; `worker.{executor,models,policy}`
+**Imports:** `harness.{control, events, exceptions, status}` (shared contracts); `harness.core.{analysis_flow, command_registry, persistence, state_machine}`; `harness.services.{analysis, chat, context, doctor, knowledge, mode_router, prompt_profiles, workspace, workspace_files}`; `harness.tools.*`; `harness.commands.*` (lazy, in `_register_commands`); `worker.{executor,models,policy}`; `observability`; `runtime.{protocol,types}`
 **Defines:**
 - **func** `_sanitize_assistant_text(text)` — strips leaked assistant draft and Gemma turn markers before chat persistence
 - **func** `_summarize_step_execution(workspace_dir, envelope)` — status-aware final message for worker results/failures
@@ -1061,8 +1044,9 @@ Re-exports `HarnessCommandRegistry`.
   - **workspace ops:** `list_workspaces`, `create_workspace`, `rename_workspace`, `delete_workspace`, `activate_workspace(force)`, `ingest_files`; activation runs a light doctor pass
   - **run lock:** `_acquire_run(run_id)` raises `RunAlreadyActive`; `_release_run`
   - **chat ops:** `create_chat`, `list_chats`, `view_chat`, `delete_chat`, `resume_chat`, `compact_chat_history`
-  - **turn:** `run_turn(state, *, workspace_dir, chat_id, user_input, requested_mode, prompt_text, durable_context="") -> AsyncIterator[HarnessEvent]` — single-stream; emits `TurnPaused`/`TurnFailed(empty_output)` instead of hollow asg_ rows
-  - **agentic turn:** `run_agentic_turn(state, *, workspace_dir, chat_id, user_input, requested_mode, prompt_provider, max_iterations=4) -> AsyncIterator[HarnessEvent]` — bounded multi-iteration loop: sticky-analyst override (in-flight `AnalysisFlow` forces analyst mode, emits `ModeHandoffAccepted(reason="analysis_flow_sticky")`) → ensure INSPECTING flow on analyst entry → APPROVAL_PENDING hybrid branch (deterministic approve/reject/show, free-form grounds the analyst turn) → build durable context → run_turn → dispatch tool_calls → handle handoffs/empty-output/malformed-tool/plan-repair retry → prose-only-in-analyst drives forced plan emission (Gap A) → ApprovalRequired termination. Layer-3 owned per spec §6.3 / §8.1.
+  - **profile routing:** `_select_profile(state, *, chat_id, user_input) -> str` — calls `self.mode_router.route(user_input).mode`; if routed `interaction` and a prior non-interaction profile exists, keep the prior (continuity); writes `state.active_agent_mode` IN PLACE on the live `RunStateRecord` (not a model_copy); returns the chosen mode. Built deps: `self.mode_router` (`ModeRouter`), `self.prompt_profiles` (`PromptProfileRegistry`) in `__init__`.
+  - **turn:** `run_turn(state, *, workspace_dir, chat_id, user_input, requested_mode=None, prompt_text=None, durable_context="", persist_user_message=True) -> AsyncIterator[HarnessEvent]` — single-stream; `requested_mode`/`prompt_text` are internal optionals for self-reuse, not app injection; emits `TurnPaused`/`TurnFailed(empty_output)` instead of hollow asg_ rows
+  - **agentic turn:** `run_agentic_turn(state, *, workspace_dir, chat_id, user_input, max_iterations=4) -> AsyncIterator[HarnessEvent]` — NO `requested_mode`/`prompt_provider` params; calls `_select_profile` then `self.prompt_profiles.load(mode).prompt_text`. Bounded multi-iteration loop: sticky-analyst override (in-flight `AnalysisFlow` forces analyst mode, emits `ModeHandoffAccepted(reason="analysis_flow_sticky")`) → ensure INSPECTING flow on analyst entry → APPROVAL_PENDING hybrid branch (deterministic approve/reject/show, free-form grounds the analyst turn) → build durable context → run_turn → dispatch tool_calls → handle handoffs/empty-output/malformed-tool/plan-repair retry → prose-only-in-analyst drives forced plan emission (Gap A) → ApprovalRequired termination. `resume_with_clarification` sets `cleared.active_agent_mode = state.active_agent_mode` for profile continuity. Layer-3 owned per spec §6.3 / §8.1.
   - **analysis flow registry:** `_append_analysis_flow`/`_replay_analysis_flows` (prunes terminal/dropped), `_get_flow`/`_set_phase`/`_drop_flow`/`_ensure_inspecting_flow`/`_find_flow_by_plan`; `_force_plan_tool_call(state, *, flow, workspace_dir, chat_id, run_id, correction=None) -> dict|None` — dedicated non-persisted gen (`stop=["</tool_call>"]`) parsed via `runtime.tool_calls.parse_tool_call_block`, validates code-free `analysis_plan` args; `_classify_approval_intent`/`_looks_like_plan_intent`/`_summarize_inspection`/`_plan_brief` helpers
   - **tool dispatch:** `_dispatch_tool_call(state, name, args, *, chat_id=None) -> AsyncIterator[HarnessEvent]` — routes every name via `tool_registry.get_handler(name)`/`tool_registry.validate(name, args)` (tool-only; no `command_registry` fallback, no `KNOWLEDGE_INTENTS` bypass — knowledge writes now flow through the `knowledge_propose_update` tool handler which calls `knowledge_intents.handle_knowledge_intent(run_id=ctx.run_id, ...)`), builds a `ToolContext`; re-yields handler events
   - **context block:** `_build_durable_context_block(workspace_id, workspace_dir, user_query="") -> str` — adds query-relevant memory notes
@@ -1083,14 +1067,14 @@ Re-exports `HarnessCommandRegistry`.
 - Yields `TurnStarted`, `ModeActivated`, `ChatHistoryLoaded`, `PromptBuilt`, `RuntimeDelta`s, `FinalMessage`
 - Runtime-callable command catalog now includes `recall_knowledge` for workspace memory search
 
-### `src/harness/paths.py`
+### `src/harness/core/paths.py`
 **Defines:**
 - **class** `AppPaths(BaseModel)` — `from_root(root)` → app/harness/workspaces dirs
 - **class** `WorkspacePaths(BaseModel)` — `from_workspace_dir(root)` → data/artifacts/tmp/memory{notes,gaps,functions}/state
   - `relative(path)`
 
-### `src/harness/persistence.py`
-**Imports:** `harness.control.ApprovalRecord`; `harness.db.WorkspaceDb`
+### `src/harness/core/persistence.py`
+**Imports:** `harness.control.ApprovalRecord`; `harness.core.db.WorkspaceDb`; `observability`, `observability.events`
 **Defines:**
 - **class** `HarnessPersistence`
   - `save_model(table, key_name, key_value, record: BaseModel)`
@@ -1100,14 +1084,15 @@ Re-exports `HarnessCommandRegistry`.
   - `save_execution_envelope(envelope, workspace_dir)` — cascades to artifact_registry + lineage_records
   - `_fingerprint_artifact(workspace_dir, artifact_path)`
 
-### `src/harness/prompt_registry.py`
+### `src/harness/core/prompt_registry.py`
 **Defines:**
 - **var** `ALLOWED_LAYER3_PROMPTS = ["compaction", "doctor", "knowledge_reconcile"]`
 - **class** `HarnessPromptRegistry`
   - `allowed_prompts`, `load(name) -> str`
+**Notes:** narrow operational-prompt registry; distinct from `harness.services.prompt_profiles.PromptProfileRegistry` (persona prompt assembly).
 
-### `src/harness/provenance.py`
-**Imports:** TYPE_CHECKING `harness.db.WorkspaceDb`
+### `src/harness/services/provenance.py`
+**Imports:** TYPE_CHECKING `harness.core.db.WorkspaceDb`
 **Defines:**
 - **class** `ProvenanceRecord(BaseModel)` — sources, fingerprints, code hash, artifacts, plan/step, validity, prompt info
 - **class** `ClaimChecker`
@@ -1115,7 +1100,7 @@ Re-exports `HarnessCommandRegistry`.
   - `_refs_have_lineage(refs)`
 - **func** `reuse_allowed_for_source(*, validity_state) -> bool` — `ok` or `revalidated` only
 
-### `src/harness/repair.py`
+### `src/harness/services/repair.py`
 **Defines:**
 - **class** `RepairResult` (frozen dataclass) — `kind`, `payload`, `recipe`
 - **func** `_wrapper_repair`, `_type_normalization`, `_path_normalization`, `_metadata_insertion`
@@ -1123,7 +1108,7 @@ Re-exports `HarnessCommandRegistry`.
 - **func** `try_deterministic_repair(payload, *, failure_kind, record_kind) -> RepairResult`
 **Notes:** only for parse_failure/schema_mismatch/deterministic_repair_candidate
 
-### `src/harness/state_machine.py`
+### `src/harness/core/state_machine.py`
 **Imports:** `harness.control.{ApprovalRecord, Plan, RunState, RunStateRecord}`
 **Defines:**
 - **var** `ALLOWED_TRANSITIONS` — dict per spec §4.2
@@ -1142,22 +1127,24 @@ Re-exports `HarnessCommandRegistry`.
   - `publish(snapshot)`, `append_doctor_finding(finding)`, `close`, `watch() -> AsyncIterator[HarnessStatusSnapshot]`
 **Notes:** heartbeat 2.0s default; coalesce 0.05s default
 
-### `src/harness/validity.py`
+### `src/harness/core/validity.py`
 **Defines:**
 - **enum** `ValidityState(StrEnum)` — ok/changed/stale/needs_review/revalidated/broken_lineage
 - **func** `classify(*, fingerprint_action, stored_fingerprint, new_fingerprint, has_dependents_with_stale_inputs, needs_user_review, user_revalidated) -> ValidityState`
 
-### `src/harness/workspace.py`
-**Imports:** `harness.app_store.AppStore`; `harness.paths.WorkspacePaths`
+### `src/harness/core/workspace.py`
+**Imports:** `harness.core.app_store.AppStore`; `harness.core.paths.WorkspacePaths`
 **Defines:**
 - **var** `DEFAULT_WORKSPACE_ID = "w_0001"`
 - **class** `ActiveWorkspace` (frozen dataclass) — `workspace_id`, `workspace_dir`
 - **func** `bootstrap_workspace(workspace_dir) -> Path` — create dir tree + `preferences.json`
 - **class** `WorkspaceManager`
   - `open_default_workspace`, `open_workspace(workspace_id)`
+**Notes:** kernel workspace store. Distinct from `harness.services.workspace` (async manager) and `harness.services.workspace_files` (file inventory/schema reads).
 
-### `src/harness/workspace_async.py`
-**Imports:** `harness.app_store.AppStore`; `harness.chat.ChatStore`; `harness.exceptions.WorkspaceNotFound`; `harness.workspace.bootstrap_workspace`
+### `src/harness/services/workspace.py`
+**Imports:** `harness.core.app_store.AppStore`; `harness.core.workspace.bootstrap_workspace`; `harness.exceptions.WorkspaceNotFound`; `harness.services.chat.ChatStore`
+**Notes:** renamed from `harness.workspace_async` (the old name no longer exists).
 **Defines:**
 - **class** `WorkspaceSummary(BaseModel)` — id/dir/created_at/last_activated_at/chat_count/source_count/health
 - **class** `WorkspaceIngestResult(BaseModel)`
@@ -1339,8 +1326,9 @@ Re-exports `PythonStepExecutor` (executor); `ExecutionEnvelope`, `ExecutionStatu
 ## Cross-cutting Notes
 
 ### Layer boundaries enforced in code
-- `harness/factory.py` — sole place Layer 4 obtains an `Orchestrator` (with runtime injected)
-- `harness/knowledge.py::guarded_external_memory_write` — raises if any non-`KnowledgeManager` code touches `memory/`
+- `harness/core/factory.py` — sole place Layer 4 obtains an `Orchestrator` (with runtime injected)
+- `harness/services/knowledge.py::guarded_external_memory_write` — raises if any non-`KnowledgeManager` code touches `memory/`
+- `harness/core/*` must not import `harness/services/*` (kernel/services boundary; `core/factory.py` is the wiring exception)
 - `worker/policy.py` + `worker/sandbox_bootstrap.py` — defense in depth: static AST validation pre-spawn + runtime import/audit hooks in subprocess
 
 ### Name collisions to watch
@@ -1348,15 +1336,17 @@ Re-exports `PythonStepExecutor` (executor); `ExecutionEnvelope`, `ExecutionStatu
 |------|---------------|
 | `RunState` | `harness/control.py` (StrEnum, full lifecycle) vs `app/tui/models.py` (StrEnum, idle/running/stopping/error) |
 | `ExecutionEnvelope` | `harness/control.py` (Pydantic record) vs `worker/models.py` (worker result) |
-| `PromptPackage` | `harness/control.py` (HarnessRecord) vs `app/agents/types.py` (BaseModel for prompt assembly) |
+| `PromptPackage` | `harness/control.py` (HarnessRecord) vs `harness/services/prompt_profiles.py` (BaseModel for prompt assembly) |
+| `PromptProfileRegistry` vs `HarnessPromptRegistry` | `harness/services/prompt_profiles.py` (persona prompt assembly) vs `harness/core/prompt_registry.py` (narrow operational prompts) |
+| `workspace` | `harness/core/workspace.py` (kernel store) vs `harness/services/workspace.py` (async manager, ex-`workspace_async`) vs `harness/services/workspace_files.py` (file inventory/schema) |
 
 ### Telemetry is the one global side effect
-`Telemetry.emit` invoked from runtime, worker, harness persistence, app session, agent router, TUI app. Context vars (`current_boot_id` etc.) propagate through async/threads via `ContextVar`.
+`Telemetry.emit` invoked from runtime, worker, harness persistence, app session, `ModeRouter` (Layer 3 route decisions), TUI app. Context vars (`current_boot_id` etc.) propagate through async/threads via `ContextVar`.
 
 ### Hot path summary
 1. Keystroke → `PromptBar.on_input_submitted` → `DataHarnessApp._stream_turn`
-2. `AppSession.run_user_turn` → `AgentModeRouter.route` → `PromptPackageRegistry.load`
-3. `Orchestrator.run_agentic_turn` → `Orchestrator.run_turn` → `RuntimeRequestBuilder.build_messages` → `LlamaCppRuntime.stream`
+2. `AppSession.run_user_turn` → `Orchestrator.run_agentic_turn`
+3. `Orchestrator._select_profile` (`ModeRouter.route` + continuity + write-back) → `prompt_profiles.load` → `Orchestrator.run_turn` → `RuntimeRequestBuilder.build_messages` → `LlamaCppRuntime.stream`
 4. `RuntimeEvent`s flow back through `SyncToAsyncBridge` → wrapped as `HarnessEvent`s → `to_app_event` → `AppEvent`
 5. `EventConsumer.dispatch` → `DataHarnessApp._handle_*` → widget updates
 
@@ -1366,6 +1356,6 @@ Re-exports `PythonStepExecutor` (executor); `ExecutionEnvelope`, `ExecutionStatu
 - `Orchestrator.apply_doctor_actions(report_id, decision, workspace_id, workspace_dir, chat_id, action_ids=None)` reads `tmp_actions` rows, calls `Doctor.apply_tmp_action`, yields `DoctorActionsApplied`; selected `action_ids` limit application to checked doctor actions.
 - `DoctorRunner.__init__(doctor, persistence, runtime, knowledge_manager, chat_store)` now persists `DoctorReport` + `TmpAction` rows during `run` (was previously sidebar-only), and full/semantic modes can mine chat memory or assess saved scripts through the runtime.
 - `Orchestrator.compact_chat_history` now populates `replaced_turn_count` and `summary_token_estimate` on completed `ChatHistoryCompacted`; manual `user_requested` compaction passes `recent_turns_kept=0`, while token-pressure compaction keeps the compactor default recent window.
-- `AppSession.handle_direct_command` post-processes `doctor` to call `_stream_doctor_narration_and_approval` (renders LLM narration via prompt `src/app/agents/prompts/doctor_narrator.md`).
-- `AppSession.handle_doctor_approval(state, workspace_dir, report_id, decision, action_ids=None)` calls `Orchestrator.apply_doctor_actions`.
+- LLM doctor narration + `DoctorNarrationReady`/`DoctorApprovalRequested` now emit from Layer 3 `DoctorRunner._narrate_and_request_approval` (`src/harness/services/doctor.py`), rendering via `src/harness/prompts/doctor_narrator.md` with a deterministic fallback. `AppSession.handle_direct_command` is a pure passthrough — it no longer wraps the doctor flow. (Off-canonical addition, see `docs/app/doctor-behaviour.md`.)
+- `AppSession.handle_doctor_approval(*, state, workspace_dir, report_id, decision, action_ids=None)` calls `Orchestrator.apply_doctor_actions`.
 - TUI: `ConversationPane.append_compaction`, `append_doctor_line`, `append_doctor_block` (`src/app/tui/widgets.py`); blocks `CompactionSummaryBlock`, `DoctorMessageBlock` (`src/app/tui/conversation.py`). Rehydrate renders `compacted_summary` role as `CompactionSummaryBlock`. New handlers in `DataHarnessApp`: `_handle_chat_history_compacted`, `_handle_doctor_narration_ready`, `_handle_doctor_approval_requested`, `_handle_doctor_actions_applied`; completed compaction rehydrates the active transcript and refreshes sidebar resources so chat counts update. Doctor action records render in `ApprovalBanner.show_doctor_review`, suppress stale clarification prompts, and dispatch selected ids through `_stream_doctor_approval`.

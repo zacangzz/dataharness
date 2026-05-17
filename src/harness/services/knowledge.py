@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 
 from harness.control import MemoryUpdateProposal, utc_now
-from harness.persistence import HarnessPersistence
+from harness.core.persistence import HarnessPersistence
 
 
 class MemoryWriteForbidden(PermissionError):

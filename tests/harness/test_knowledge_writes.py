@@ -1,6 +1,6 @@
 import json
 
-from harness.knowledge import KnowledgeManager
+from harness.services.knowledge import KnowledgeManager
 
 
 def test_write_and_delete_note(tmp_path):

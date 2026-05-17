@@ -6,6 +6,12 @@
 - **Command**: user/app-callable harness surface invoked from Layer 4 TUI, slash commands, command palette, or app controls, then validated and dispatched by Layer 3.
 - **Service**: internal implementation unit, usually Layer 3, that owns domain logic used by tools and/or commands. Services are not directly exposed to the model or TUI.
 
+## Harness Core (Kernel) Note
+
+Layer 3 is a separable **Harness Core (kernel)** under `src/harness/core/` (state machine, command registry, approval, validity, analysis flow, persistence/db, app store, paths, fingerprints, kernel workspace, prompt registry) plus **harness services** under `src/harness/services/`, joined by shared contracts at the `src/harness/` root (`control`, `events`, `exceptions`, `status`, `orchestrator`). The kernel does not import services. See `docs/app/services.md`.
+
+Prompt profiles (`PromptProfileRegistry`) and the intent router (`ModeRouter`) are Layer 3 **services**, not Tools and not Commands. They are never model-callable or UI-callable: the orchestrator routes the prompt profile internally per turn. There is no `app.agents` package.
+
 ## No-Orphan Invariant
 
 No exposed harness operation may be surface-less.

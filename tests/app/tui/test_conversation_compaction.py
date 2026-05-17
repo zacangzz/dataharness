@@ -6,7 +6,7 @@ from app.tui.conversation import (
     AssistantMessageBlock, CompactionSummaryBlock, UserMessageBlock,
 )
 from app.tui.widgets import ConversationPane
-from harness.chat import ChatMessage, ChatRecord
+from harness.services.chat import ChatMessage, ChatRecord
 
 
 def _msg(role: str, text: str, idx: int) -> ChatMessage:

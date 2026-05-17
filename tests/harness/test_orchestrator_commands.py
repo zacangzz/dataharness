@@ -2,8 +2,8 @@ from datetime import UTC, datetime
 
 import pytest
 
-from harness.chat import ChatMessage
-from harness.command_registry import CommandContext
+from harness.services.chat import ChatMessage
+from harness.core.command_registry import CommandContext
 from harness.exceptions import RunAlreadyActive, WorkspaceSwitchBlocked
 from harness.orchestrator import Orchestrator
 from harness.control import RunStateRecord
@@ -197,9 +197,9 @@ async def test_cancel_run_descriptor_marked_available(orch):
 
 
 async def test_memory_review_command_lists_proposals(tmp_path):
-    from harness.db import WorkspaceDb
-    from harness.persistence import HarnessPersistence
-    from harness.knowledge import KnowledgeManager
+    from harness.core.db import WorkspaceDb
+    from harness.core.persistence import HarnessPersistence
+    from harness.services.knowledge import KnowledgeManager
 
     db = WorkspaceDb(tmp_path / "state" / "workspace.db")
     persistence = HarnessPersistence(db)
@@ -225,9 +225,9 @@ async def test_memory_review_command_lists_proposals(tmp_path):
 
 
 async def test_memory_review_command_filters_by_status(tmp_path):
-    from harness.db import WorkspaceDb
-    from harness.persistence import HarnessPersistence
-    from harness.knowledge import KnowledgeManager
+    from harness.core.db import WorkspaceDb
+    from harness.core.persistence import HarnessPersistence
+    from harness.services.knowledge import KnowledgeManager
 
     db = WorkspaceDb(tmp_path / "state" / "workspace.db")
     persistence = HarnessPersistence(db)
@@ -310,8 +310,8 @@ async def test_inspect_artifact_descriptor_marked_available(orch):
 
 
 async def test_provenance_inspect_returns_lineage(tmp_path):
-    from harness.db import WorkspaceDb
-    from harness.persistence import HarnessPersistence
+    from harness.core.db import WorkspaceDb
+    from harness.core.persistence import HarnessPersistence
 
     db = WorkspaceDb(tmp_path / "state" / "workspace.db")
     persistence = HarnessPersistence(db)
@@ -344,8 +344,8 @@ async def test_provenance_inspect_returns_lineage(tmp_path):
 
 
 async def test_provenance_inspect_missing_returns_not_found(tmp_path):
-    from harness.db import WorkspaceDb
-    from harness.persistence import HarnessPersistence
+    from harness.core.db import WorkspaceDb
+    from harness.core.persistence import HarnessPersistence
 
     db = WorkspaceDb(tmp_path / "state" / "workspace.db")
     persistence = HarnessPersistence(db)
@@ -367,8 +367,8 @@ async def test_provenance_inspect_descriptor_marked_available(orch):
 
 
 async def test_validity_inspect_returns_all_records(tmp_path):
-    from harness.db import WorkspaceDb
-    from harness.persistence import HarnessPersistence
+    from harness.core.db import WorkspaceDb
+    from harness.core.persistence import HarnessPersistence
 
     db = WorkspaceDb(tmp_path / "state" / "workspace.db")
     persistence = HarnessPersistence(db)
@@ -395,8 +395,8 @@ async def test_validity_inspect_returns_all_records(tmp_path):
 
 
 async def test_validity_inspect_filters_by_subject_id(tmp_path):
-    from harness.db import WorkspaceDb
-    from harness.persistence import HarnessPersistence
+    from harness.core.db import WorkspaceDb
+    from harness.core.persistence import HarnessPersistence
 
     db = WorkspaceDb(tmp_path / "state" / "workspace.db")
     persistence = HarnessPersistence(db)
@@ -430,8 +430,8 @@ async def test_validity_inspect_descriptor_marked_available(orch):
 
 
 async def test_mark_result_trusted_writes_validity_record(tmp_path):
-    from harness.db import WorkspaceDb
-    from harness.persistence import HarnessPersistence
+    from harness.core.db import WorkspaceDb
+    from harness.core.persistence import HarnessPersistence
 
     db = WorkspaceDb(tmp_path / "state" / "workspace.db")
     persistence = HarnessPersistence(db)
@@ -461,8 +461,8 @@ async def test_mark_result_trusted_writes_validity_record(tmp_path):
 
 
 async def test_mark_result_trusted_requires_step_id(tmp_path):
-    from harness.db import WorkspaceDb
-    from harness.persistence import HarnessPersistence
+    from harness.core.db import WorkspaceDb
+    from harness.core.persistence import HarnessPersistence
 
     db = WorkspaceDb(tmp_path / "state" / "workspace.db")
     persistence = HarnessPersistence(db)
@@ -477,8 +477,8 @@ async def test_mark_result_trusted_requires_step_id(tmp_path):
 
 
 async def test_mark_result_trusted_rejects_unknown_step(tmp_path):
-    from harness.db import WorkspaceDb
-    from harness.persistence import HarnessPersistence
+    from harness.core.db import WorkspaceDb
+    from harness.core.persistence import HarnessPersistence
 
     db = WorkspaceDb(tmp_path / "state" / "workspace.db")
     persistence = HarnessPersistence(db)
@@ -497,8 +497,8 @@ async def test_mark_result_trusted_rejects_unknown_step(tmp_path):
 
 
 async def test_mark_result_trusted_accepts_known_step(tmp_path):
-    from harness.db import WorkspaceDb
-    from harness.persistence import HarnessPersistence
+    from harness.core.db import WorkspaceDb
+    from harness.core.persistence import HarnessPersistence
 
     db = WorkspaceDb(tmp_path / "state" / "workspace.db")
     persistence = HarnessPersistence(db)
@@ -528,8 +528,8 @@ async def test_mark_result_trusted_descriptor_marked_available(orch):
 
 
 async def test_mark_result_invalidated_writes_validity_record(tmp_path):
-    from harness.db import WorkspaceDb
-    from harness.persistence import HarnessPersistence
+    from harness.core.db import WorkspaceDb
+    from harness.core.persistence import HarnessPersistence
 
     db = WorkspaceDb(tmp_path / "state" / "workspace.db")
     persistence = HarnessPersistence(db)
@@ -558,8 +558,8 @@ async def test_mark_result_invalidated_writes_validity_record(tmp_path):
 
 
 async def test_mark_result_invalidated_overwrites_prior_trusted(tmp_path):
-    from harness.db import WorkspaceDb
-    from harness.persistence import HarnessPersistence
+    from harness.core.db import WorkspaceDb
+    from harness.core.persistence import HarnessPersistence
 
     db = WorkspaceDb(tmp_path / "state" / "workspace.db")
     persistence = HarnessPersistence(db)
@@ -591,8 +591,8 @@ async def test_mark_result_invalidated_descriptor_marked_available(orch):
 
 
 async def test_challenge_conclusion_writes_review_proposal(tmp_path):
-    from harness.db import WorkspaceDb
-    from harness.persistence import HarnessPersistence
+    from harness.core.db import WorkspaceDb
+    from harness.core.persistence import HarnessPersistence
 
     db = WorkspaceDb(tmp_path / "state" / "workspace.db")
     persistence = HarnessPersistence(db)
@@ -624,8 +624,8 @@ async def test_challenge_conclusion_descriptor_marked_available(orch):
 
 
 async def test_challenge_conclusion_records_unique_proposals(tmp_path):
-    from harness.db import WorkspaceDb
-    from harness.persistence import HarnessPersistence
+    from harness.core.db import WorkspaceDb
+    from harness.core.persistence import HarnessPersistence
 
     db = WorkspaceDb(tmp_path / "state" / "workspace.db")
     persistence = HarnessPersistence(db)
@@ -691,8 +691,8 @@ async def test_stop_after_current_step_descriptor_marked_available(orch):
 
 
 async def test_revise_goal_updates_plan_record(tmp_path):
-    from harness.db import WorkspaceDb
-    from harness.persistence import HarnessPersistence
+    from harness.core.db import WorkspaceDb
+    from harness.core.persistence import HarnessPersistence
 
     db = WorkspaceDb(tmp_path / "state" / "workspace.db")
     persistence = HarnessPersistence(db)
@@ -718,8 +718,8 @@ async def test_revise_goal_updates_plan_record(tmp_path):
 
 
 async def test_revise_goal_missing_plan_returns_error(tmp_path):
-    from harness.db import WorkspaceDb
-    from harness.persistence import HarnessPersistence
+    from harness.core.db import WorkspaceDb
+    from harness.core.persistence import HarnessPersistence
 
     db = WorkspaceDb(tmp_path / "state" / "workspace.db")
     persistence = HarnessPersistence(db)
@@ -735,8 +735,8 @@ async def test_revise_goal_missing_plan_returns_error(tmp_path):
 
 
 async def test_revise_goal_appends_audit_record(tmp_path):
-    from harness.db import WorkspaceDb
-    from harness.persistence import HarnessPersistence
+    from harness.core.db import WorkspaceDb
+    from harness.core.persistence import HarnessPersistence
 
     db = WorkspaceDb(tmp_path / "state" / "workspace.db")
     persistence = HarnessPersistence(db)
@@ -769,8 +769,8 @@ async def test_revise_goal_descriptor_marked_available(orch):
 
 
 async def test_retry_step_records_request(tmp_path):
-    from harness.db import WorkspaceDb
-    from harness.persistence import HarnessPersistence
+    from harness.core.db import WorkspaceDb
+    from harness.core.persistence import HarnessPersistence
 
     db = WorkspaceDb(tmp_path / "state" / "workspace.db")
     persistence = HarnessPersistence(db)
@@ -801,8 +801,8 @@ async def test_retry_step_descriptor_marked_available(orch):
 
 
 async def test_rerun_step_records_request(tmp_path):
-    from harness.db import WorkspaceDb
-    from harness.persistence import HarnessPersistence
+    from harness.core.db import WorkspaceDb
+    from harness.core.persistence import HarnessPersistence
 
     db = WorkspaceDb(tmp_path / "state" / "workspace.db")
     persistence = HarnessPersistence(db)
@@ -829,8 +829,8 @@ async def test_rerun_step_descriptor_marked_available(orch):
 
 
 async def test_rerun_overrides_retry_request_for_same_step(tmp_path):
-    from harness.db import WorkspaceDb
-    from harness.persistence import HarnessPersistence
+    from harness.core.db import WorkspaceDb
+    from harness.core.persistence import HarnessPersistence
 
     db = WorkspaceDb(tmp_path / "state" / "workspace.db")
     persistence = HarnessPersistence(db)

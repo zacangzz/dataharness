@@ -1,8 +1,8 @@
 from pathlib import Path
 
-from harness.app_store import AppStore
-from harness.paths import AppPaths, WorkspacePaths
-from harness.workspace import WorkspaceManager, bootstrap_workspace
+from harness.core.app_store import AppStore
+from harness.core.paths import AppPaths, WorkspacePaths
+from harness.core.workspace import WorkspaceManager, bootstrap_workspace
 
 
 def test_app_paths_match_workspace_first_layout(tmp_path: Path) -> None:

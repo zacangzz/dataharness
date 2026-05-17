@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from harness.events import CommandCompleted, CommandStarted, HarnessEvent
-from harness.knowledge_intents import handle_knowledge_intent
+from harness.services.knowledge_intents import handle_knowledge_intent
 from harness.tools.registry import ToolContext
 
 # operation (model-facing) -> legacy knowledge-intent name

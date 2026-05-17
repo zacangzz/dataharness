@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
-    from harness.db import WorkspaceDb
+    from harness.core.db import WorkspaceDb
 
 
 class ProvenanceRecord(BaseModel):

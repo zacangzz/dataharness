@@ -1,6 +1,6 @@
 import pytest
 
-from harness.command_registry import (
+from harness.core.command_registry import (
     ArgSpec, CommandContext, HarnessCommandDescriptor, HelpResult,
     HarnessCommandRegistry,
 )

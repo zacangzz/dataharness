@@ -9,15 +9,12 @@ from observability import Telemetry, resolve_telemetry_dir
 from observability.events import EventKind, Layer
 
 
-class AgentModeRequest(BaseModel):
+class ProfileDecision(BaseModel):
     mode: str
     reason: str
 
 
-AgentModeDecision = AgentModeRequest
-
-
-class AgentModeRouter:
+class ModeRouter:
     def __init__(
         self,
         telemetry: Telemetry | None = None,
@@ -60,15 +57,16 @@ class AgentModeRouter:
         "means", "teach", "metric",
     }
 
-    def request_mode(self, user_text: str) -> AgentModeRequest:
+    def request_mode(self, user_text: str) -> ProfileDecision:
+        """Stable public entry point that delegates to route(); kept for callers and tests that use the historical name."""
         return self.route(user_text)
 
-    def route(self, user_text: str) -> AgentModeRequest:
+    def route(self, user_text: str) -> ProfileDecision:
         normalized = user_text.lower()
         words = {w for w in re.split(r"[^a-z0-9_]+", normalized) if w}
 
         if words & self.knowledge_terms:
-            decision = AgentModeRequest(mode="knowledge", reason="knowledge_capture_intent")
+            decision = ProfileDecision(mode="knowledge", reason="knowledge_capture_intent")
             self._emit_decision(decision, user_text)
             return decision
 
@@ -77,17 +75,17 @@ class AgentModeRouter:
             or self._phrase_match(normalized)
             or self._transformation_match(normalized, words)
         ):
-            decision = AgentModeRequest(mode="analyst", reason="analysis_intent")
+            decision = ProfileDecision(mode="analyst", reason="analysis_intent")
             self._emit_decision(decision, user_text)
             return decision
 
         classified = self._classify_with_llm(user_text)
         if classified is not None and classified != "interaction":
-            decision = AgentModeRequest(mode=classified, reason="llm_classifier")
+            decision = ProfileDecision(mode=classified, reason="llm_classifier")
             self._emit_decision(decision, user_text)
             return decision
 
-        decision = AgentModeRequest(mode="interaction", reason="front_door_default")
+        decision = ProfileDecision(mode="interaction", reason="front_door_default")
         self._emit_decision(decision, user_text)
         return decision
 
@@ -123,9 +121,9 @@ class AgentModeRouter:
             return result
         return None
 
-    def _emit_decision(self, decision: AgentModeRequest, user_text: str) -> None:
+    def _emit_decision(self, decision: ProfileDecision, user_text: str) -> None:
         self.telemetry.emit(
-            Layer.APP,
+            Layer.HARNESS,
             EventKind.AGENT_MODE_PROPOSED,
             payload={"mode": decision.mode, "reason": decision.reason, "input_chars": len(user_text)},
         )

@@ -3,10 +3,10 @@ from pathlib import Path
 import pytest
 
 from harness.control import RunStateRecord
-from harness.db import WorkspaceDb
-from harness.doctor import Doctor, TmpCleanupBlocked
+from harness.core.db import WorkspaceDb
+from harness.services.doctor import Doctor, TmpCleanupBlocked
 from harness.orchestrator import Orchestrator
-from harness.persistence import HarnessPersistence
+from harness.core.persistence import HarnessPersistence
 
 
 def test_doctor_uses_lazy_fingerprinting_when_metadata_is_unchanged(tmp_path: Path) -> None:

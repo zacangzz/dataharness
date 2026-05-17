@@ -1,9 +1,9 @@
 from pathlib import Path
 
 from harness.control import RunStateRecord
-from harness.db import WorkspaceDb
+from harness.core.db import WorkspaceDb
 from harness.orchestrator import Orchestrator
-from harness.persistence import HarnessPersistence
+from harness.core.persistence import HarnessPersistence
 
 
 def test_switch_workspace_updates_workspace_id_and_resets_run_id(tmp_path: Path) -> None:

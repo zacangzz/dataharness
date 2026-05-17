@@ -4,7 +4,7 @@ This file is a compact reference of durable project lessons. Historical incident
 details and resolved bug narratives belong in `Issues.md`; keep this document
 focused on current rules, gotchas, and verification cues.
 
-Last reviewed: 2026-05-14.
+Last reviewed: 2026-05-17.
 
 ## Layer Ownership
 
@@ -20,9 +20,10 @@ Last reviewed: 2026-05-14.
   facts from Layer 3; CSV/TSV preview formatting, transcript cleanup, and UI
   rendering are Layer 4 responsibilities.
 - The agentic loop belongs in the harness. `Orchestrator.run_agentic_turn(...)`
-  owns durable context, tool dispatch, retries, mode handoff acceptance, and
-  follow-up prompt construction. `AppSession` picks the initial mode, injects a
-  prompt-provider callback, and maps harness events to app events.
+  owns intent routing, prompt-profile selection, durable context, tool
+  dispatch, retries, mode handoff acceptance, and follow-up prompt
+  construction. `AppSession` is a thin facade: it forwards calls and maps
+  harness events to app events; it does not route or select prompts.
 - Memory writes must remain behind `KnowledgeManager`. Do not add alternate
   write paths under `memory/`.
 - Commands that implicitly target UI state, such as `/compact`, need Layer 4 to
@@ -190,7 +191,7 @@ Last reviewed: 2026-05-14.
   `--version` can exit without UI side effects.
 - PyInstaller dynamic imports need explicit coverage. Keep `scripts/build_app.sh`
   hidden imports and `--collect-submodules` aligned with dynamic imports in
-  `cli.py`, `harness.factory`, runtime factories, and worker bootstrap.
+  `cli.py`, `harness.core.factory`, runtime factories, and worker bootstrap.
 - For PyInstaller `--add-data`, the destination should be the target directory,
   not a full target file path. TCSS and prompt directories must be packaged.
 - When a packaged binary fails, inspect packaged logs such as
@@ -215,12 +216,14 @@ Last reviewed: 2026-05-14.
 - Factory-built orchestrators must inherit the active app root. Derive it from
   `<app_root>/workspaces/<workspace_id>` and pass it through `Orchestrator` and
   `AppSession`, or workspace commands can point at the wrong app root.
-- `harness.workspace_async` is a required Layer 3 module. It must expose
-  async-shaped workspace create/list/rename/delete/activate/ingest operations,
-  and workspace deletion must cascade chat cleanup.
+- `harness.services.workspace` (the async workspace manager, renamed from
+  `harness.workspace_async` — that name no longer exists) is a required
+  Layer 3 service. It must expose async-shaped workspace
+  create/list/rename/delete/activate/ingest operations, and workspace
+  deletion must cascade chat cleanup.
 - Workspace durable context is built by the harness through
-  `_build_durable_context_block(...)` and `harness.context`; Layer 4 should not
-  read workspace files directly.
+  `_build_durable_context_block(...)` and `harness.services.context`; Layer 4
+  should not read workspace files directly.
 - Sidebar files and `@` picker entries should be restricted to workspace
   `data/`. Workspace internals such as `memory/`, `state/`, and `chats/` should
   not surface as selectable user data.
@@ -263,11 +266,17 @@ Last reviewed: 2026-05-14.
   command output, doctor findings, and failure details are consolidated in a
   sidebar instead of scattered across mostly empty panes.
 
-## Routing And Prompt Packages
+## Routing And Prompt Profiles
 
-- Mode handoff intents are app-layer control signals, not harness commands.
-  Do not register `handoff_to_analyst` or `handoff_to_knowledge` as normal
-  commands.
+- Routing and prompt-profile selection are Layer 3, not Layer 4. The intent
+  router is `harness.services.mode_router.ModeRouter` and prompt assembly is
+  `harness.services.prompt_profiles.PromptProfileRegistry`. There is no
+  `app.agents` package and `AppSession` does not route or select prompts;
+  `Orchestrator` builds `self.mode_router`/`self.prompt_profiles` in
+  `__init__` and routes per turn inside `run_agentic_turn`.
+- Mode handoff intents are model control signals consumed by the agentic
+  loop, not harness commands. Do not register `handoff_to_analyst` or
+  `handoff_to_knowledge` as normal commands.
 - The router keyword set must cover aggregation language (`count`, `total`,
   `sum`, `average`, `top N`, `how many`, `number of`, `breakdown of`) so data
   questions reach analyst mode. Optional LLM fallback routing should stay
@@ -360,16 +369,27 @@ Last reviewed: 2026-05-14.
   tag, parse via `parse_tool_call_block`, one bounded retry, else a loud
   `FinalMessage`. Tiny code-free JSON + stop + validate + retry makes a GBNF
   grammar unnecessary (it would add ~0 once emission is forced).
-- L4 `AgentModeRouter` routes mode per-message from text only, and the TUI
-  holds ONE long-lived `RunStateRecord` passed by reference that the loop
-  never writes back — so "ok proceed" after an analyst turn routes to
+- The original "ok proceed" bug: a per-message L4 router routed from text
+  only while the TUI held ONE long-lived `RunStateRecord` by reference that
+  the loop never wrote back — so a follow-up after an analyst turn routed to
   interaction, where `analysis_plan` is unavailable and the model
-  hallucinates "I have generated the plan". Fix is L3-owned state, not L4
-  plumbing: an `AnalysisFlow` registry keyed by chat_id, persisted/replayed
-  exactly like `_pending_plans` (`analysis_flows.jsonl`, prune terminal/
-  dropped on replay). While a flow is non-terminal the loop overrides the
-  routed mode to analyst (sticky) and emits
-  `ModeHandoffAccepted(reason="analysis_flow_sticky")`.
+  hallucinated "I have generated the plan". This is now fixed at two levels.
+  (1) Routing moved into Layer 3: `Orchestrator._select_profile(state, *,
+  chat_id, user_input) -> str` calls `mode_router.route()`, keeps the prior
+  non-interaction profile when the router returns `interaction`
+  (continuity), and writes `state.active_agent_mode` back IN PLACE on the
+  same `RunStateRecord` (not a `model_copy`), so the long-lived TUI state
+  stays correct — closing the long-standing "loop never writes back" bug.
+  `resume_with_clarification` carries `active_agent_mode` forward so profile
+  continuity survives a clarification resume. (2) An `AnalysisFlow` registry
+  keyed by chat_id, persisted/replayed exactly like `_pending_plans`
+  (`analysis_flows.jsonl`, prune terminal/dropped on replay): while a flow
+  is non-terminal the loop overrides the routed mode to analyst (sticky) and
+  emits `ModeHandoffAccepted(reason="analysis_flow_sticky")`.
+- `run_agentic_turn` no longer takes `requested_mode`/`prompt_provider`; it
+  routes internally. `run_turn` keeps an internal optional
+  `requested_mode: str | None = None` (and `prompt_text`) for its own reuse,
+  not as an app injection point.
 - Force a plan ONLY after the analyst actually inspected data
   (`inspection_summary` set from a dispatched tool) OR narrated plan intent
   (`_looks_like_plan_intent`). A bare `handoff_to_analyst` for a conceptual
@@ -384,3 +404,29 @@ Last reviewed: 2026-05-14.
   model turn, with the stashed plan injected into the durable context for
   grounding. Ambiguous input falls back to free-form (a grounded answer is
   safer than an accidental approve).
+
+## Harness Core
+
+- Layer 3 is a separable kernel plus services. The Harness Core (kernel)
+  lives under `src/harness/core/`: `state_machine`, `factory`,
+  `command_registry`, `validity`, `approval`, `analysis_flow`, `db`,
+  `persistence`, `app_store`, `paths`, `fingerprints`, `workspace`,
+  `prompt_registry` (plus an empty `__init__.py`). Shared contracts STAY at
+  the `src/harness/` root: `control.py`, `events.py`, `exceptions.py`,
+  `status.py`, and `orchestrator.py` (the composer) — these are not part of
+  the kernel folder and were intentionally left at root. Services live under
+  `src/harness/services/`.
+- The boundary direction is one-way: `src/harness/core/*` must not import
+  from `src/harness/services/*`; services may depend on the kernel and on
+  the shared root contracts. The orchestrator wires the two together.
+- `analysis_flow` is a kernel module (`harness.core.analysis_flow`), NOT a
+  service — earlier docs that listed it as a service module were wrong.
+- Three distinct workspace modules exist; do not conflate them:
+  `harness.core.workspace` (kernel workspace store),
+  `harness.services.workspace` (the ex-`workspace_async` async manager,
+  renamed), and `harness.services.workspace_files` (file inventory / schema
+  reads). `workspace_async` no longer exists under that name.
+- The re-export shims `src/harness/commands.py`, `src/harness/doctor.py`,
+  and `src/harness/doctor_runner.py` are deleted. The `src/harness/commands/`
+  PACKAGE of real command modules still exists — do not confuse the deleted
+  `commands.py` module with the `commands/` package.

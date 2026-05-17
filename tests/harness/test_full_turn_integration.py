@@ -2,11 +2,11 @@
 from datetime import UTC, datetime
 from pathlib import Path
 
-from harness.command_registry import CommandContext
+from harness.core.command_registry import CommandContext
 from harness.control import ApprovalRecord, RunStateRecord
-from harness.db import WorkspaceDb
+from harness.core.db import WorkspaceDb
 from harness.orchestrator import Orchestrator
-from harness.persistence import HarnessPersistence
+from harness.core.persistence import HarnessPersistence
 from worker.executor import PythonStepExecutor
 
 

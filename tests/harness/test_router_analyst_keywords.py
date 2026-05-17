@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import pytest
 
-from app.agents.router import AgentModeRouter
+from harness.services.mode_router import ModeRouter
 
 
 @pytest.fixture
 def router(tmp_path):
     # Telemetry is satisfied by default; constructor takes no required args.
-    return AgentModeRouter()
+    return ModeRouter()
 
 
 @pytest.mark.parametrize("text", [
@@ -57,7 +57,7 @@ def test_llm_classifier_fallback_disabled_by_default(router):
 def test_llm_classifier_fallback_when_enabled():
     def fake(text: str) -> str:
         return "analyst"
-    r = AgentModeRouter(enable_llm_classifier=True, llm_classifier=fake)
+    r = ModeRouter(enable_llm_classifier=True, llm_classifier=fake)
     assert r.route("does that make sense").mode == "analyst"
 
 
@@ -68,7 +68,7 @@ def test_llm_classifier_caches_results():
         calls.append(text)
         return "analyst"
 
-    r = AgentModeRouter(enable_llm_classifier=True, llm_classifier=fake)
+    r = ModeRouter(enable_llm_classifier=True, llm_classifier=fake)
     r.route("ambiguous query")
     r.route("ambiguous query")
     assert len(calls) == 1

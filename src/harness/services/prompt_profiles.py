@@ -3,8 +3,16 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-from app.agents.types import PromptPackage
+from pydantic import BaseModel
+
 from harness.tools.registry import HarnessToolRegistry
+
+
+class PromptPackage(BaseModel):
+    mode: str
+    template_version: str
+    prompt_text: str
+    package_hash: str
 
 
 MODE_TOOL_NAMES = {
@@ -67,7 +75,7 @@ def _tool_catalog(mode: str, tool_registry: HarnessToolRegistry | None) -> str:
     )
 
 
-class PromptPackageRegistry:
+class PromptProfileRegistry:
     def __init__(
         self,
         prompts_dir: Path,

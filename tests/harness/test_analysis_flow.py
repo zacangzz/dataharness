@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from harness.analysis_flow import AnalysisFlow, AnalysisPhase
+from harness.core.analysis_flow import AnalysisFlow, AnalysisPhase
 from harness.orchestrator import Orchestrator
 
 

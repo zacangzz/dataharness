@@ -1,4 +1,4 @@
-from harness.provenance import ClaimChecker, ProvenanceRecord
+from harness.services.provenance import ClaimChecker, ProvenanceRecord
 
 
 def test_provenance_record_tracks_required_claim_lineage() -> None:
@@ -32,8 +32,8 @@ def test_claim_checker_rejects_unsupported_claims() -> None:
 
 
 def test_claim_checker_marks_unsupported_when_db_lineage_missing(tmp_path):
-    from harness.db import WorkspaceDb
-    from harness.provenance import ClaimChecker
+    from harness.core.db import WorkspaceDb
+    from harness.services.provenance import ClaimChecker
 
     db = WorkspaceDb(tmp_path / "state" / "workspace.db")
     db.connect()
@@ -45,8 +45,8 @@ def test_claim_checker_marks_unsupported_when_db_lineage_missing(tmp_path):
 
 
 def test_claim_checker_supports_claim_when_lineage_row_present(tmp_path):
-    from harness.db import WorkspaceDb
-    from harness.provenance import ClaimChecker
+    from harness.core.db import WorkspaceDb
+    from harness.services.provenance import ClaimChecker
 
     db = WorkspaceDb(tmp_path / "state" / "workspace.db")
     db.connect()
@@ -70,8 +70,8 @@ def test_claim_checker_supports_claim_when_lineage_row_present(tmp_path):
 def test_artifact_registry_includes_fingerprint_and_validity_ids(tmp_path):
     from pathlib import Path
 
-    from harness.db import WorkspaceDb
-    from harness.persistence import HarnessPersistence
+    from harness.core.db import WorkspaceDb
+    from harness.core.persistence import HarnessPersistence
 
     workspace = tmp_path / "w_0001"
     artifact_dir = workspace / "artifacts" / "tmp" / "run_1" / "step_1"
@@ -98,7 +98,7 @@ def test_artifact_registry_includes_fingerprint_and_validity_ids(tmp_path):
 
 
 def test_reuse_blocked_after_source_fingerprint_change():
-    from harness.provenance import reuse_allowed_for_source
+    from harness.services.provenance import reuse_allowed_for_source
 
     assert reuse_allowed_for_source(validity_state="ok") is True
     assert reuse_allowed_for_source(validity_state="revalidated") is True

@@ -2,8 +2,8 @@ from datetime import UTC, datetime
 
 import pytest
 
-from harness.analysis_flow import AnalysisFlow, AnalysisPhase
-from harness.command_registry import CommandContext
+from harness.core.analysis_flow import AnalysisFlow, AnalysisPhase
+from harness.core.command_registry import CommandContext
 from harness.control import ApprovalRecord, RunStateRecord
 from harness.orchestrator import Orchestrator
 

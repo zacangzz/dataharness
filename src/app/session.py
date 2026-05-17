@@ -1,31 +1,19 @@
 from __future__ import annotations
 
-import json
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from app.agents.prompt_packages import PromptPackageRegistry
-from app.agents.router import AgentModeRouter
 from app.event_mapping import to_app_event
-from app.events import (
-    AppDoctorActionsApplied, AppDoctorApprovalRequested,
-    AppDoctorFinding, AppDoctorNarrationReady, AppDoctorReportReady, AppEvent,
-)
-from harness.command_registry import CommandContext, HarnessCommandDescriptor, HelpResult
+from app.events import AppEvent
+from harness.core.command_registry import CommandContext, HarnessCommandDescriptor, HelpResult
 from harness.control import RunStateRecord
-from harness.events import DoctorActionsApplied, DoctorApprovalRequested, DoctorNarrationReady
 from harness.exceptions import RunAlreadyActive
 from harness.orchestrator import Orchestrator
 from harness.status import HarnessStatusSnapshot
 from observability import Telemetry, bind_turn, resolve_telemetry_dir
 from observability.events import EventKind, Layer
-from runtime.types import RuntimeMessage, RuntimeRequest
-
-
-_DOCTOR_PROMPT_PATH = Path(__file__).resolve().parent / "agents" / "prompts" / "doctor_narrator.md"
 
 
 class AppSession:
@@ -35,8 +23,6 @@ class AppSession:
         self,
         *,
         orchestrator: Orchestrator | None = None,
-        mode_router: AgentModeRouter | None = None,
-        prompt_registry: PromptPackageRegistry | None = None,
         telemetry: Telemetry | None = None,
         app_root: Path | None = None,
     ) -> None:
@@ -45,11 +31,6 @@ class AppSession:
         self.orchestrator = orchestrator or Orchestrator(app_root=self.app_root)
         if hasattr(self.orchestrator, "telemetry"):
             self.orchestrator.telemetry = self.telemetry
-        self.mode_router = mode_router or AgentModeRouter(telemetry=self.telemetry)
-        self.prompt_registry = prompt_registry or PromptPackageRegistry(
-            Path(__file__).resolve().parent / "agents" / "prompts",
-            tool_registry=getattr(self.orchestrator, "tool_registry", None),
-        )
         self._active = False
 
     async def run_user_turn(
@@ -67,16 +48,8 @@ class AppSession:
         try:
             with bind_turn(turn_id):
                 self.telemetry.emit(Layer.APP, EventKind.TURN_START, payload={"input_chars": len(user_text)})
-                # L4 owns: initial mode pick + prompt provision (§8.3 step 2).
-                # L3 owns: agentic loop, tool dispatch, retry, handoff (§6.3, §8.1).
-                decision = self.mode_router.route(user_text)
-
-                def prompt_provider(mode: str) -> str:
-                    return self.prompt_registry.load(mode).prompt_text
-
                 async for h_ev in self.orchestrator.run_agentic_turn(
                     state, workspace_dir=workspace_dir, chat_id=chat_id, user_input=user_text,
-                    requested_mode=decision.mode, prompt_provider=prompt_provider,
                 ):
                     yield to_app_event(h_ev)
                 self.telemetry.emit(Layer.APP, EventKind.TURN_END, payload={"chat_id": chat_id})
@@ -106,65 +79,10 @@ class AppSession:
     async def handle_direct_command(
         self, state: RunStateRecord, *, command: str, arguments: dict[str, Any],
     ) -> AsyncIterator[AppEvent]:
-        findings: list[AppDoctorFinding] = []
-        report: AppDoctorReportReady | None = None
         async for h_ev in self.orchestrator.handle_direct_command(
             state, command=command, arguments=arguments,
         ):
-            app_ev = to_app_event(h_ev)
-            yield app_ev
-            if command == "doctor":
-                if isinstance(app_ev, AppDoctorFinding):
-                    findings.append(app_ev)
-                elif isinstance(app_ev, AppDoctorReportReady):
-                    report = app_ev
-        if command == "doctor" and report is not None:
-            async for ev in self._stream_doctor_narration_and_approval(state, report, findings):
-                yield ev
-
-    async def _stream_doctor_narration_and_approval(
-        self,
-        state: RunStateRecord,
-        report: AppDoctorReportReady,
-        findings: list[AppDoctorFinding],
-    ) -> AsyncIterator[AppEvent]:
-        action_records = self._collect_tmp_actions(report.report_id)
-        proposed = [r for r in action_records if not r.get("applied") and r.get("action") != "kept_temporarily"]
-        action_summaries = [
-            f"{r.get('action')}: {r.get('item_path')}"
-            + (f" -> {r['destination_path']}" if r.get("destination_path") else "")
-            for r in proposed
-        ]
-        base = dict(
-            ts=datetime.now(UTC), workspace_id=state.workspace_id,
-            chat_id=report.chat_id, run_id=None,
-        )
-        if not proposed:
-            counts = report.summary_counts or {}
-            narration = (
-                f"Doctor sweep clean: tmp empty, no cleanup needed. "
-                f"Findings: {counts.get('info', 0)} info, "
-                f"{counts.get('warn', 0)} warn, {counts.get('error', 0)} error."
-            )
-            yield to_app_event(DoctorNarrationReady(
-                **base, report_id=report.report_id,
-                narration_text=narration, action_summaries=[],
-            ))
-            yield to_app_event(DoctorActionsApplied(
-                **base, report_id=report.report_id,
-                applied_count=0, skipped_count=0, details=[],
-            ))
-            return
-        narration = await self._render_doctor_narration(findings, action_summaries)
-        yield to_app_event(DoctorNarrationReady(
-            **base, report_id=report.report_id,
-            narration_text=narration, action_summaries=action_summaries,
-        ))
-        question = "Apply all proposed actions? (yes / no)"
-        yield to_app_event(DoctorApprovalRequested(
-            **base, report_id=report.report_id,
-            question=question, action_count=len(proposed),
-        ))
+            yield to_app_event(h_ev)
 
     async def handle_doctor_approval(
         self, *, state: RunStateRecord, workspace_dir: Path, report_id: str, decision: str,
@@ -176,67 +94,6 @@ class AppSession:
             action_ids=action_ids,
         ):
             yield to_app_event(h_ev)
-
-    def _collect_tmp_actions(self, report_id: str) -> list[dict[str, Any]]:
-        persistence = getattr(self.orchestrator, "persistence", None)
-        if persistence is None:
-            return []
-        try:
-            rows = persistence.db.list_records("tmp_actions")
-        except Exception:
-            return []
-        return [r for r in rows if r.get("doctor_report_id") == report_id]
-
-    async def _render_doctor_narration(
-        self, findings: list[AppDoctorFinding], action_summaries: list[str],
-    ) -> str:
-        findings_payload = [
-            {"category": f.category, "severity": f.severity, "summary": f.summary, "details": f.details}
-            for f in findings
-        ]
-        runtime = getattr(self.orchestrator, "runtime", None)
-        if runtime is None:
-            return self._fallback_doctor_narration(findings_payload, action_summaries)
-        try:
-            template = _DOCTOR_PROMPT_PATH.read_text()
-        except Exception:
-            return self._fallback_doctor_narration(findings_payload, action_summaries)
-        prompt = template.format(
-            findings_json=json.dumps(findings_payload, indent=2),
-            actions_text="\n".join(action_summaries) or "(none)",
-        )
-        request = RuntimeRequest(
-            messages=[
-                RuntimeMessage(role="system", content=prompt),
-                RuntimeMessage(role="user", content="Produce the narration now."),
-            ],
-            max_completion_tokens=320,
-            request_id=f"req_doctor_{uuid4().hex[:8]}",
-        )
-        chunks: list[str] = []
-        try:
-            async for ev in runtime.stream(request):
-                if getattr(ev, "type", None) == "text_delta":
-                    chunks.append(getattr(ev, "text", "") or "")
-        except Exception:
-            return self._fallback_doctor_narration(findings_payload, action_summaries)
-        text = "".join(chunks).strip()
-        return text or self._fallback_doctor_narration(findings_payload, action_summaries)
-
-    @staticmethod
-    def _fallback_doctor_narration(
-        findings_payload: list[dict[str, Any]], action_summaries: list[str],
-    ) -> str:
-        lines = [f"Doctor sweep produced {len(findings_payload)} finding(s)."]
-        for f in findings_payload:
-            lines.append(f"- [{f['severity']}] {f['summary']}")
-        if action_summaries:
-            lines.append("Proposed cleanup:")
-            lines.extend(f"- {s}" for s in action_summaries)
-        else:
-            lines.append("No cleanup actions to apply.")
-        lines.append("Apply all proposed actions? (yes / no)")
-        return "\n".join(lines)
 
     async def cancel_run(self, run_id: str, reason: str):
         return to_app_event(await self.orchestrator.cancel_run(run_id, reason=reason))

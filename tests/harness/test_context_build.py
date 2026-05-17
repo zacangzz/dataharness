@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from harness.context import ContextManager, list_workspace_files, read_file_schema
+from harness.services.context import ContextManager, list_workspace_files, read_file_schema
 
 
 @pytest.mark.asyncio

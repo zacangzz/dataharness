@@ -1,6 +1,6 @@
 import pytest
 
-from harness.analysis_flow import AnalysisFlow, AnalysisPhase
+from harness.core.analysis_flow import AnalysisFlow, AnalysisPhase
 from harness.control import Plan, PlanStep, RunStateRecord
 from harness.events import ApprovalRequired, FinalMessage, PlanReady, RuntimeDelta
 from harness.orchestrator import Orchestrator
@@ -36,10 +36,6 @@ class RecordingRuntime:
         return "ready"
 
 
-def _provider(mode: str) -> str:
-    return f"PROMPT[{mode}]"
-
-
 def _seed_plan(orch: Orchestrator) -> Plan:
     step = PlanStep(
         workspace_id="w_0001", plan_id="plan_x", step_order=1,
@@ -68,8 +64,7 @@ async def _run(orch, text):
     return [
         e async for e in orch.run_agentic_turn(
             state, workspace_dir=orch.app_root, chat_id="c1",
-            user_input=text, requested_mode="interaction",
-            prompt_provider=_provider, max_iterations=2,
+            user_input=text, max_iterations=2,
         )
     ]
 

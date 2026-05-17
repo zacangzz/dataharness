@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from harness.chat import (
+from harness.services.chat import (
     ChatCompactor, ChatMessage, ChatRecord, ChatStore,
 )
 

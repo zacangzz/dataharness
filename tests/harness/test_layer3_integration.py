@@ -1,13 +1,13 @@
 from pathlib import Path
 
 from harness import bootstrap_workspace
-from harness.context import ContextManager
+from harness.services.context import ContextManager
 from harness.control import RunStateRecord
-from harness.db import WorkspaceDb
-from harness.doctor import Doctor
-from harness.knowledge import KnowledgeManager
+from harness.core.db import WorkspaceDb
+from harness.services.doctor import Doctor
+from harness.services.knowledge import KnowledgeManager
 from harness.orchestrator import Orchestrator
-from harness.provenance import ClaimChecker
+from harness.services.provenance import ClaimChecker
 
 
 async def test_layer3_barebones_harness_can_operate_workspace(tmp_path: Path) -> None:

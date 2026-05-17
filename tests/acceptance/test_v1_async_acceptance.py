@@ -81,7 +81,7 @@ async def test_chat_files_after_first_message(session, tmp_path):
 
 async def test_workspace_delete_cascades_chats(session, tmp_path):
     from datetime import UTC, datetime
-    from harness.chat import ChatMessage
+    from harness.services.chat import ChatMessage
     await session.create_workspace("w1")
     chat = await session.create_chat("w1")
     await session.orchestrator.chat_store.append_message(chat.chat_id, ChatMessage(

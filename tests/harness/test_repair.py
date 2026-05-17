@@ -1,4 +1,4 @@
-from harness.repair import try_deterministic_repair
+from harness.services.repair import try_deterministic_repair
 
 
 def test_wrapper_repair_wraps_scalar_arguments() -> None:

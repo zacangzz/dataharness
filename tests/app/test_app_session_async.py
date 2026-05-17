@@ -32,20 +32,18 @@ class FakeOrchestrator:
             self._active = False
 
     async def run_agentic_turn(
-        self, state, *, workspace_dir, chat_id, user_input,
-        requested_mode, prompt_provider, max_iterations=4,
+        self, state, *, workspace_dir, chat_id, user_input, max_iterations=4,
     ):
         # Single-iteration shim that delegates to run_turn for the AppSession test.
-        prompt_provider(requested_mode)
         async for ev in self.run_turn(
             state, workspace_dir=workspace_dir, chat_id=chat_id, user_input=user_input,
-            requested_mode=requested_mode, prompt_text="", durable_context="",
+            requested_mode=state.active_agent_mode, prompt_text="", durable_context="",
         ):
             yield ev
 
     async def list_commands(self, ctx=None): return []
     async def help(self, command=None):
-        from harness.command_registry import HelpResult
+        from harness.core.command_registry import HelpResult
         return HelpResult(commands=[], not_found=False)
     async def status_snapshot(self, **kw):
         from harness.status import HarnessStatusSnapshot

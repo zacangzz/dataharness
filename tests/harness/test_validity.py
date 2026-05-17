@@ -1,4 +1,4 @@
-from harness.validity import ValidityState, classify
+from harness.core.validity import ValidityState, classify
 
 
 def test_validity_states_cover_all_six_per_spec() -> None:

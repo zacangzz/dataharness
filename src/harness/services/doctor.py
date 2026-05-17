@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -11,17 +11,21 @@ from uuid import uuid4
 
 from harness.events import (
     CommandCompleted, CommandProgress, CommandStarted, DoctorActionProposed,
-    DoctorFinding, DoctorReportReady, DoctorStarted, HarnessEvent,
+    DoctorActionsApplied, DoctorApprovalRequested, DoctorFinding,
+    DoctorNarrationReady, DoctorReportReady, DoctorStarted, HarnessEvent,
 )
-from harness.fingerprints import lazy_fingerprint
-from harness.knowledge import KnowledgeManager
-from harness.validity import ValidityState, classify
+from harness.core.fingerprints import lazy_fingerprint
+from harness.services.knowledge import KnowledgeManager
+from harness.core.validity import ValidityState, classify
 from runtime.types import RuntimeMessage, RuntimeRequest
 
 if TYPE_CHECKING:
-    from harness.chat import ChatStore
-    from harness.persistence import HarnessPersistence
+    from harness.services.chat import ChatStore
+    from harness.core.persistence import HarnessPersistence
     from runtime.protocol import Runtime
+
+
+_DOCTOR_NARRATOR_PROMPT = Path(__file__).resolve().parents[2] / "harness" / "prompts" / "doctor_narrator.md"
 
 
 PROMOTION_TARGETS = {
@@ -544,9 +548,118 @@ class DoctorRunner:
             report_id=report_id, summary_counts=summary_counts,
             recommendations=recommendations, action_records=action_records,
         )
+        async for nev in self._narrate_and_request_approval(
+            report_id, chat_id, workspace_id, summary_counts, all_findings,
+        ):
+            yield nev
         yield CommandCompleted(
             ts=datetime.now(UTC), workspace_id=workspace_id, chat_id=chat_id, run_id=run_id,
             command="doctor", result={"report_id": report_id},
+        )
+
+    def _collect_tmp_actions(self, report_id: str) -> list[dict[str, Any]]:
+        if self.persistence is None:
+            return []
+        try:
+            rows = self.persistence.db.list_records("tmp_actions")
+        except Exception:
+            return []
+        return [r for r in rows if r.get("doctor_report_id") == report_id]
+
+    @staticmethod
+    def _fallback_narration(
+        findings_payload: list[dict[str, Any]], action_summaries: list[str],
+    ) -> str:
+        lines = [f"Doctor sweep produced {len(findings_payload)} finding(s)."]
+        for f in findings_payload:
+            lines.append(f"- [{f['severity']}] {f['summary']}")
+        if action_summaries:
+            lines.append("Proposed cleanup:")
+            lines.extend(f"- {s}" for s in action_summaries)
+        else:
+            lines.append("No cleanup actions to apply.")
+        lines.append("Apply all proposed actions? (yes / no)")
+        return "\n".join(lines)
+
+    async def _render_narration(
+        self, findings_payload: list[dict[str, Any]], action_summaries: list[str],
+    ) -> str:
+        if self.runtime is None:
+            return self._fallback_narration(findings_payload, action_summaries)
+        try:
+            template = _DOCTOR_NARRATOR_PROMPT.read_text()
+        except Exception:
+            return self._fallback_narration(findings_payload, action_summaries)
+        prompt = template.format(
+            findings_json=json.dumps(findings_payload, indent=2),
+            actions_text="\n".join(action_summaries) or "(none)",
+        )
+        request = RuntimeRequest(
+            messages=[
+                RuntimeMessage(role="system", content=prompt),
+                RuntimeMessage(role="user", content="Produce the narration now."),
+            ],
+            max_completion_tokens=320,
+            request_id=f"req_doctor_{uuid4().hex[:8]}",
+        )
+        chunks: list[str] = []
+        try:
+            async for ev in self.runtime.stream(request):
+                if getattr(ev, "type", None) == "text_delta":
+                    chunks.append(getattr(ev, "text", "") or "")
+        except Exception:
+            return self._fallback_narration(findings_payload, action_summaries)
+        text = "".join(chunks).strip()
+        return text or self._fallback_narration(findings_payload, action_summaries)
+
+    async def _narrate_and_request_approval(
+        self, report_id: str, chat_id: str | None, workspace_id: str,
+        summary_counts: dict[str, int], findings: list[DoctorFinding],
+    ) -> AsyncGenerator[HarnessEvent, None]:
+        records = self._collect_tmp_actions(report_id)
+        proposed = [
+            r for r in records
+            if not r.get("applied") and r.get("action") != "kept_temporarily"
+        ]
+        action_summaries = [
+            f"{r.get('action')}: {r.get('item_path')}"
+            + (f" -> {r['destination_path']}" if r.get("destination_path") else "")
+            for r in proposed
+        ]
+        base = dict(
+            ts=datetime.now(UTC), workspace_id=workspace_id,
+            chat_id=chat_id, run_id=None,
+        )
+        if not proposed:
+            counts = summary_counts or {}
+            narration = (
+                f"Doctor sweep clean: tmp empty, no cleanup needed. "
+                f"Findings: {counts.get('info', 0)} info, "
+                f"{counts.get('warn', 0)} warn, {counts.get('error', 0)} error."
+            )
+            yield DoctorNarrationReady(
+                **base, report_id=report_id,
+                narration_text=narration, action_summaries=[],
+            )
+            yield DoctorActionsApplied(
+                **base, report_id=report_id,
+                applied_count=0, skipped_count=0, details=[],
+            )
+            return
+        findings_payload = [
+            {"category": f.category, "severity": f.severity,
+             "summary": f.summary, "details": f.details}
+            for f in (findings or [])
+        ]
+        narration = await self._render_narration(findings_payload, action_summaries)
+        yield DoctorNarrationReady(
+            **base, report_id=report_id,
+            narration_text=narration, action_summaries=action_summaries,
+        )
+        yield DoctorApprovalRequested(
+            **base, report_id=report_id,
+            question="Apply all proposed actions? (yes / no)",
+            action_count=len(proposed),
         )
 
     def _run_phase(

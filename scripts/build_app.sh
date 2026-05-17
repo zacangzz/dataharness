@@ -17,8 +17,8 @@ uv run --with pyinstaller pyinstaller \
   --hidden-import app.tui.app \
   --hidden-import app.session \
   --hidden-import harness.control \
-  --hidden-import harness.factory \
-  --hidden-import harness.workspace \
+  --hidden-import harness.core.factory \
+  --hidden-import harness.core.workspace \
   --hidden-import runtime.config \
   --hidden-import runtime.llama_cpp_runtime \
   --hidden-import worker.sandbox_bootstrap \

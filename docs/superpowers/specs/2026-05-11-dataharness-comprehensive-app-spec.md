@@ -8,7 +8,7 @@ Purpose: define the complete DataHarness application as a local-first, evidence-
 
 DataHarness is a local-first data analysis, data science, and reporting application. It is not a generic chatbot shell. It is a stateful, evidence-grounded workbench that lets a user ask questions about local files, approve controlled Python work, inspect artifacts, retain reusable knowledge, and understand whether prior conclusions remain valid after data changes.
 
-The system is single-user and local-first. It uses one local LLM runtime, one controlled Python execution worker, one harness core, and one application layer that includes the Textual TUI plus built-in agent modes.
+The system is single-user and local-first. It uses one local LLM runtime, one controlled Python execution worker, one harness (a separable Harness Core plus harness services that own intent routing and built-in prompt profiles), and one application layer that is the Textual TUI plus the `AppSession` facade.
 
 The product goal is to make local data work reliable enough that important claims can be traced back to inspected source files, executed code, artifacts, fingerprints, validity state, and prompt mode context.
 
@@ -50,9 +50,9 @@ The model may plan, suggest, summarize, and explain. Analytical truth comes from
 
 ### 3.2 Harness As Platform Core
 
-The harness is the operational center of the product. It owns orchestration, run state, workspace truth, chat persistence, context policy, approvals, validity, doctor, review, memory update proposals, provenance, retry, repair, and command semantics.
+The harness is the operational center of the product. It owns orchestration, run state, workspace truth, chat persistence, context policy, approvals, validity, doctor, review, memory update proposals, provenance, retry, repair, command semantics, intent routing, and prompt-profile selection. It is built as a separable Harness Core (kernel) plus harness services and shared contracts.
 
-The TUI and agent modes make the harness usable and expressive, but they do not replace harness authority.
+The TUI makes the harness usable and inspectable, but it does not replace harness authority.
 
 ### 3.3 Strict Layer Ownership
 
@@ -67,8 +67,8 @@ Layer responsibilities:
 
 - Layer 1 Runtime owns model interaction, streaming, token pressure, tool-call parsing, and runtime status.
 - Layer 2 Worker owns subprocess execution, sandbox mechanics, task status, stdout/stderr capture, and execution envelopes.
-- Layer 3 Harness owns orchestration, state, chat history, context assembly, command semantics, approval, validity, doctor, memory, provenance, and persistence.
-- Layer 4 Application owns user interaction, Textual rendering, prompt UX, event mapping, app-layer telemetry, and agent prompt modes.
+- Layer 3 Harness owns orchestration, state, chat history, context assembly, command semantics, approval, validity, doctor, memory, provenance, persistence, intent routing, and prompt-profile selection. It is organized as a separable Harness Core (kernel) plus harness services and shared contracts.
+- Layer 4 Application owns user interaction, Textual rendering, prompt UX, event mapping, and app-layer telemetry. Layer 4 is the TUI plus the `AppSession` facade; it does not own routing or prompt selection.
 
 Dependency rules:
 
@@ -116,8 +116,8 @@ Implementation dependencies flow downward, but the running application centers o
 ```text
 TUI input
   -> AppSession
-    -> agent mode routing and prompt package selection
     -> Orchestrator
+      -> intent routing and prompt-profile selection (Layer 3)
       -> RuntimeRequestBuilder
       -> LlamaCppRuntime.stream(...)
       -> PythonStepExecutor.submit/wait/cancel(...)
@@ -329,9 +329,20 @@ Layer 2 reports these facts. Layer 3 decides how they affect the run.
 
 Layer 3 turns runtime plus execution into a real analysis system. It is the source of operational truth and the first fully meaningful product layer.
 
+Layer 3 also owns intent routing and prompt-profile selection. The interaction/data-analyst/knowledge behaviors are prompt profiles resolved inside the harness, not an app sublayer: a deterministic intent router (`ModeRouter`) picks the mode and a prompt-profile registry (`PromptProfileRegistry`) assembles the prompt package. There is no Layer 4b agent sublayer; Layer 4 is the TUI plus the `AppSession` facade.
+
+Layer 3 is structured as:
+
+- a separable **Harness Core (kernel)** under `src/harness/core/` — the state machine, command registry, approval gate, plan validity, analysis flow, persistence/db, app store, paths, fingerprints, kernel workspace store, and prompt registry. The kernel is the layer-pure heart that does not depend on harness services.
+- **harness services** under `src/harness/services/` — mode routing, prompt profiles, chat, context, knowledge, knowledge intents, analysis, doctor, repair, provenance, workspace, and workspace files.
+- **shared contracts** at `src/harness/` root — `control`, `events`, `exceptions`, `status`, and the `orchestrator` that composes the kernel and services.
+
+The harness exposes three surfaces: model-callable **Tools**, user/app-callable **Commands**, and internal **Services**. Prompt profiles and the intent router are Services; they are never directly model- or UI-callable.
+
 ### 7.2 Required Capabilities
 
 - Orchestrator and control loop.
+- Intent routing and prompt-profile selection.
 - Active workspace, chat, run, and mode state.
 - Chat lifecycle and persistence.
 - Workspace lifecycle and ingest coordination.
@@ -395,7 +406,7 @@ Higher layers may request work or decisions, but the harness validates and recor
 A user turn follows this logic:
 
 1. Layer 4 opens a turn and sends user text through `AppSession`.
-2. `AppSession` routes the text to an agent mode and loads the prompt package.
+2. The harness routes the text to a prompt profile (`ModeRouter`) and loads the prompt package (`PromptProfileRegistry`), preserving the prior non-interaction profile on ambiguous input and persisting the chosen mode on the run state.
 3. The harness appends the user message to the active chat.
 4. The harness reloads fresh durable workspace context.
 5. The harness validates or records the active mode.
@@ -781,24 +792,17 @@ Subscribers must tolerate duplicate snapshots.
 
 ### 9.1 Purpose
 
-Layer 4 turns the harness into the product the user experiences. It is the application layer built on top of Layer 3, and it has two explicit sibling sublayers:
-
-- `4a. TUI`
-- `4b. Agent modes`
-
-These sublayers are siblings because neither one owns the other. The TUI does not own agent policy, and agent modes do not own interface state. Both consume the harness through the Layer 4 `AppSession` facade.
+Layer 4 turns the harness into the product the user experiences. It is the application layer built on top of Layer 3. Layer 4 is the Textual TUI plus the `AppSession` facade that connects it to the harness. There is no agent-mode sublayer: prompt-profile identity, intent routing, and prompt selection are Layer 3 concerns (see §7.1).
 
 Layer 4 owns:
 
 - product presentation
 - user interaction
 - app-layer turn correlation
-- prompt-mode identity
-- prompt package selection
 - event mapping for UI consumption
 - keyboard, command, help, prompt, and navigation behavior
 
-Layer 4 does not own operational truth. Plans, approvals, execution, workspace state, chat state, memory writes, doctor decisions, validity, provenance, and command semantics remain Layer 3 responsibilities.
+Layer 4 does not own operational truth. Routing, prompt-profile selection, plans, approvals, execution, workspace state, chat state, memory writes, doctor decisions, validity, provenance, and command semantics are all Layer 3 responsibilities.
 
 The application layer does not replace the harness. Its purpose is to make the harness operable, inspectable, and purpose-built for data analysis work.
 
@@ -807,19 +811,16 @@ The application layer does not replace the harness. Its purpose is to make the h
 Layer 4 is organized as:
 
 ```text
-Layer 4a TUI -------------\
-                           +--> AppSession --> Layer 3 Orchestrator
-Layer 4b Agent Modes -----/
+Layer 4a TUI --> AppSession --> Layer 3 Orchestrator
 ```
 
-`AppSession` is the shared boundary object. It is Layer 4 code, but it is not the TUI and it is not an agent. It is the application facade that composes TUI input, agent-mode routing, prompt packages, app telemetry, concurrency checks, and harness-event mapping.
+`AppSession` is the boundary object. It is Layer 4 code, but it is not the TUI and it is not an agent. It is a thin application facade that forwards TUI input to the harness, applies app telemetry and concurrency checks, and maps harness events to app events. It does not route intents or select prompts; those are Layer 3 concerns.
 
 This distinction keeps responsibilities clear:
 
 - Layer 4a TUI collects user input and renders app events.
-- Layer 4b agent modes choose app identity, prompt package, and specialization policy.
-- `AppSession` coordinates those Layer 4 concerns and calls Layer 3.
-- Layer 3 validates, persists, executes, and emits authoritative events.
+- `AppSession` forwards those calls to Layer 3 and maps events back.
+- Layer 3 routes intent, selects the prompt profile, validates, persists, executes, and emits authoritative events.
 
 ### 9.3 AppSession Responsibilities
 
@@ -827,58 +828,37 @@ This distinction keeps responsibilities clear:
 
 It owns:
 
-- mode routing through `AgentModeRouter`
-- prompt package loading through `PromptPackageRegistry`
 - app-layer telemetry and turn correlation
 - single-active-run fast-fail gate
 - mapping `HarnessEvent` to `AppEvent`
+- pure passthrough of direct commands and doctor-approval decisions to the orchestrator
 
-It mirrors the orchestrator's async method surface so TUI modules do not import harness internals directly.
+It mirrors the orchestrator's async method surface so TUI modules do not import harness internals directly. It does not import `app.agents` (no such package exists) or `runtime.*`.
 
-`AppSession` may hold active workspace and chat references for UI convenience, but it must not become a second source of chat content, workspace truth, command semantics, or run state. Its state is process-local coordination state; durable state belongs to Layer 3.
+`AppSession` may hold active workspace and chat references for UI convenience, but it must not become a second source of chat content, workspace truth, command semantics, run state, routing, or prompt selection. Its state is process-local coordination state; durable state and routing belong to Layer 3.
 
-### 9.4 Layer 4b: Agent Modes
+### 9.4 Prompt Profiles (Layer 3)
 
-Layer 4b is the app identity and specialization sublayer. It gives DataHarness its data-analysis behavior through prompt modes, prompt package selection, routing policy, and response framing.
-
-Layer 4b answers questions such as:
+DataHarness gets its data-analysis behavior from Layer 3 prompt profiles, not an app sublayer. A deterministic intent router and a prompt-profile registry inside the harness answer:
 
 - what kind of turn is this?
-- which app mode should handle it?
+- which prompt profile should handle it?
 - what role prompt and response style should shape the runtime request?
-- when should a mode ask for clarification?
-- when should a mode hand off to analyst or knowledge behavior?
-- how should data-analysis work be described to the harness?
+- when should a profile ask for clarification or hand off?
 
-Layer 4b does not execute work. It requests harness actions through `AppSession` and Layer 3 command/orchestration surfaces.
-
-Agent modes:
+Prompt profiles:
 
 - `interaction`
-- `data analyst`
+- `data analyst` (`analyst`)
 - `knowledge`
 
-Agents are prompt modes, not concurrent runtimes. They specialize behavior on top of the harness.
+Profiles are prompt packages, not concurrent runtimes. The interaction profile handles front-door conversation and routes analytical and knowledge intents. The data-analyst profile turns analytical intent into plans, execution requests, artifact-backed answers, and gap records. The knowledge profile turns user teaching and reusable logic into harness-owned memory proposals.
 
-The interaction agent handles front-door conversation, routes analytical and knowledge intents, and requests clarification when intent is too ambiguous.
-
-The data analyst agent turns analytical intent into harness actions, plans, execution requests, artifact-backed answers, and gap records.
-
-The knowledge agent turns user teaching, file semantics, metric definitions, and reusable logic into harness-owned memory proposals.
-
-Agents may request harness services. They may not own runtime process management, run-state transitions, persistence semantics, execution policy, provenance, validity, doctor policy, artifact truth, retry, or repair.
+`ModeRouter` selects the profile per turn from the user text; on ambiguous input the harness preserves the prior non-interaction profile (continuity for follow-ups and clarification resume). The chosen mode is written back onto the live run state. `PromptProfileRegistry` assembles the prompt package (system + persona + tool catalog + response format) on demand.
 
 ### 9.5 Prompt Ownership
 
-Layer 4b owns app-defining prompts:
-
-- role prompt templates
-- prompt assembly rules for each agent mode
-- response style
-- domain-specific analysis and knowledge behavior
-- prompt-level handoff rules
-
-Layer 3 may own narrow operational prompts for context compaction, doctor tmp review, and knowledge reconciliation. These outputs are advisory until harness validation records and applies the action.
+Layer 3 owns all app-defining prompts. Persona templates and prompt-assembly rules live under `src/harness/prompts/` (system, interaction, analyst, knowledge, clarification, response_format, doctor_narrator) alongside the pre-existing narrow operational prompts (compaction, doctor tmp review, knowledge reconciliation). Operational-prompt outputs are advisory until harness validation records and applies the action.
 
 Layers 1, 2, and TUI widgets do not contain app-defining prompts.
 
@@ -1360,7 +1340,7 @@ DataHarness is not correct unless all of these are true:
 - no artifact-backed conclusion lacks provenance
 - no saved knowledge is reused after material source change without validity handling
 - no doctor outcome silently overwrites prior state
-- no agent bypasses harness ownership boundaries
+- intent routing and prompt-profile selection are Layer 3; no app code routes or selects prompts, and no prompt profile bypasses harness ownership boundaries
 - no UI hides critical failures or uncertainty
 - no retry loop runs invisibly without bounded control
 - no durable memory update occurs without a reviewable path

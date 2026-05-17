@@ -7,10 +7,10 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from harness.app_store import AppStore
-from harness.chat import ChatStore
+from harness.core.app_store import AppStore
+from harness.services.chat import ChatStore
 from harness.exceptions import WorkspaceNotFound
-from harness.workspace import bootstrap_workspace
+from harness.core.workspace import bootstrap_workspace
 
 
 class WorkspaceSummary(BaseModel):

@@ -2,10 +2,10 @@
 from pathlib import Path
 
 from harness.control import RunState, RunStateRecord
-from harness.db import WorkspaceDb
-from harness.knowledge import KnowledgeManager
+from harness.core.db import WorkspaceDb
+from harness.services.knowledge import KnowledgeManager
 from harness.orchestrator import Orchestrator
-from harness.persistence import HarnessPersistence
+from harness.core.persistence import HarnessPersistence
 from runtime.types import RuntimeEvent, TokenPressure
 
 

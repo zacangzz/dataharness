@@ -1,6 +1,6 @@
 import pytest
 
-from harness.analysis_flow import AnalysisFlow, AnalysisPhase
+from harness.core.analysis_flow import AnalysisFlow, AnalysisPhase
 from harness.control import RunStateRecord
 from harness.events import ApprovalRequired, FinalMessage
 from harness.orchestrator import Orchestrator
@@ -52,10 +52,6 @@ class ScriptRuntime:
 
     async def status(self):
         return "ready"
-
-
-def _provider(mode: str) -> str:
-    return f"PROMPT[{mode}]"
 
 
 @pytest.mark.asyncio
@@ -111,8 +107,7 @@ async def test_plan_pending_forced_emission_reaches_approval(tmp_path) -> None:
     events = [
         e async for e in orch.run_agentic_turn(
             state, workspace_dir=tmp_path, chat_id="c1",
-            user_input="hire rate?", requested_mode="analyst",
-            prompt_provider=_provider, max_iterations=2,
+            user_input="hire rate?", max_iterations=2,
         )
     ]
 
@@ -136,8 +131,7 @@ async def test_forced_emission_retry_then_recover(tmp_path) -> None:
     events = [
         e async for e in orch.run_agentic_turn(
             state, workspace_dir=tmp_path, chat_id="c1",
-            user_input="hire rate?", requested_mode="analyst",
-            prompt_provider=_provider, max_iterations=2,
+            user_input="hire rate?", max_iterations=2,
         )
     ]
 
@@ -158,8 +152,7 @@ async def test_forced_emission_exhausted_fails_loudly(tmp_path) -> None:
     events = [
         e async for e in orch.run_agentic_turn(
             state, workspace_dir=tmp_path, chat_id="c1",
-            user_input="hire rate?", requested_mode="analyst",
-            prompt_provider=_provider, max_iterations=2,
+            user_input="hire rate?", max_iterations=2,
         )
     ]
 

@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from harness.control import ApprovalRecord, RunStateRecord
-from harness.db import WorkspaceDb
+from harness.core.db import WorkspaceDb
 
 
 def test_workspace_db_bootstraps_layer3_authoritative_tables(tmp_path: Path) -> None:

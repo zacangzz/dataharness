@@ -3,7 +3,7 @@ enforces byte/char caps, detects binary."""
 
 import pytest
 
-from harness.command_registry import CommandContext
+from harness.core.command_registry import CommandContext
 from harness.orchestrator import Orchestrator
 from harness.services.workspace_files import WorkspaceFileService
 

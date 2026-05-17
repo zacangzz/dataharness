@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from pathlib import Path
 
-from harness.chat import ChatMessage
+from harness.services.chat import ChatMessage
 from harness.control import RunStateRecord
 from harness.orchestrator import Orchestrator
 from runtime.types import RuntimeEvent, TokenPressure

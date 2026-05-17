@@ -2,9 +2,9 @@
 from pathlib import Path
 
 from harness.control import RunStateRecord
-from harness.db import WorkspaceDb
+from harness.core.db import WorkspaceDb
 from harness.orchestrator import Orchestrator
-from harness.persistence import HarnessPersistence
+from harness.core.persistence import HarnessPersistence
 from runtime.types import RuntimeEvent
 
 

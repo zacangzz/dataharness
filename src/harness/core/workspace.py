@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness.app_store import AppStore
-from harness.paths import WorkspacePaths
+from harness.core.app_store import AppStore
+from harness.core.paths import WorkspacePaths
 
 
 DEFAULT_WORKSPACE_ID = "w_0001"

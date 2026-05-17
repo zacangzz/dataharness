@@ -1,6 +1,6 @@
 import pytest
 
-from harness.analysis_flow import AnalysisFlow, AnalysisPhase
+from harness.core.analysis_flow import AnalysisFlow, AnalysisPhase
 from harness.control import RunStateRecord
 from harness.events import ModeHandoffAccepted
 from harness.orchestrator import Orchestrator
@@ -32,13 +32,6 @@ class ProseRuntime:
         return "ready"
 
 
-def _provider(seen: list[str]):
-    def provide(mode: str) -> str:
-        seen.append(mode)
-        return f"PROMPT[{mode}]"
-    return provide
-
-
 @pytest.mark.asyncio
 async def test_in_flight_flow_forces_analyst_mode(tmp_path) -> None:
     orch = Orchestrator(runtime=ProseRuntime(), app_root=tmp_path)
@@ -47,40 +40,36 @@ async def test_in_flight_flow_forces_analyst_mode(tmp_path) -> None:
         phase=AnalysisPhase.INSPECTING, original_request="hire rates?",
     )
     state = RunStateRecord(workspace_id="w_0001", active_agent_mode="interaction")
-    seen: list[str] = []
 
     events = [
         e async for e in orch.run_agentic_turn(
             state, workspace_dir=tmp_path, chat_id="c1",
-            user_input="ok proceed", requested_mode="interaction",
-            prompt_provider=_provider(seen), max_iterations=2,
+            user_input="ok proceed", max_iterations=2,
         )
     ]
 
-    assert "analyst" in seen
-    assert "interaction" not in seen
+    # Sticky override forces the analyst profile despite interaction routing.
+    assert state.active_agent_mode == "analyst"
     sticky = [
         e for e in events
         if isinstance(e, ModeHandoffAccepted) and e.reason == "analysis_flow_sticky"
     ]
-    assert sticky and sticky[0].to_mode == "analyst"
+    assert sticky and sticky[0].from_mode == "interaction" and sticky[0].to_mode == "analyst"
 
 
 @pytest.mark.asyncio
-async def test_no_flow_keeps_requested_mode(tmp_path) -> None:
+async def test_no_flow_keeps_routed_mode(tmp_path) -> None:
     orch = Orchestrator(runtime=ProseRuntime(), app_root=tmp_path)
     state = RunStateRecord(workspace_id="w_0001", active_agent_mode="interaction")
-    seen: list[str] = []
 
     events = [
         e async for e in orch.run_agentic_turn(
             state, workspace_dir=tmp_path, chat_id="c1",
-            user_input="hello", requested_mode="interaction",
-            prompt_provider=_provider(seen), max_iterations=1,
+            user_input="hello", max_iterations=1,
         )
     ]
 
-    assert seen and seen[0] == "interaction"
+    assert state.active_agent_mode == "interaction"
     assert not [
         e for e in events
         if isinstance(e, ModeHandoffAccepted) and e.reason == "analysis_flow_sticky"
@@ -96,14 +85,16 @@ async def test_terminal_flow_does_not_stick(tmp_path) -> None:
         phase=AnalysisPhase.DONE,
     )
     state = RunStateRecord(workspace_id="w_0001", active_agent_mode="interaction")
-    seen: list[str] = []
 
-    [
+    events = [
         e async for e in orch.run_agentic_turn(
             state, workspace_dir=tmp_path, chat_id="c1",
-            user_input="hi", requested_mode="interaction",
-            prompt_provider=_provider(seen), max_iterations=1,
+            user_input="hi", max_iterations=1,
         )
     ]
 
-    assert seen and seen[0] == "interaction"
+    assert state.active_agent_mode == "interaction"
+    assert not [
+        e for e in events
+        if isinstance(e, ModeHandoffAccepted) and e.reason == "analysis_flow_sticky"
+    ]
