@@ -3,7 +3,7 @@ from harness.services.mode_router import ModeRouter, ProfileDecision
 
 def test_router_returns_request_object_not_authoritative_decision() -> None:
     router = ModeRouter()
-    request = router.request_mode("compare attrition by department")
+    request = router.route("compare attrition by department")
     assert request.mode == "analyst"
     assert request.reason == "analysis_intent"
     # Task 2 renamed the request DTO AgentModeRequest -> ProfileDecision;

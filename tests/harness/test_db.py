@@ -59,3 +59,15 @@ def test_approval_records_are_stored_append_only(tmp_path: Path) -> None:
     )
     db.append_record("approval_records", approval.id, approval.model_dump(mode="json"))
     assert db.load_record("approval_records", "id", approval.id)["decision"] == "approved"
+
+
+def test_list_records_where_filters_by_json_field(tmp_path: Path) -> None:
+    db = WorkspaceDb(tmp_path / "state" / "workspace.db")
+    db.connect()
+    db.append_record("tmp_actions", "a1", {"id": "a1", "doctor_report_id": "r1"})
+    db.append_record("tmp_actions", "a2", {"id": "a2", "doctor_report_id": "r2"})
+    db.append_record("tmp_actions", "a3", {"id": "a3", "doctor_report_id": "r1"})
+
+    rows = db.list_records_where("tmp_actions", "doctor_report_id", "r1")
+    assert sorted(r["id"] for r in rows) == ["a1", "a3"]
+    assert db.list_records_where("tmp_actions", "doctor_report_id", "rX") == []

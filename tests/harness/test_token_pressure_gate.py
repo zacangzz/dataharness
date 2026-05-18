@@ -71,7 +71,6 @@ async def test_orchestrator_compacts_chat_before_runtime_when_pressure_over_thre
         workspace_dir=tmp_path / "workspaces" / "w_0001",
         chat_id=chat_id,
         user_input="hi",
-        requested_mode="interaction",
         prompt_text="prompt",
     ))
 
@@ -94,7 +93,6 @@ async def test_orchestrator_skips_compaction_when_pressure_is_below_threshold(tm
         workspace_dir=tmp_path / "workspaces" / "w_0001",
         chat_id=chat_id,
         user_input="hi",
-        requested_mode="interaction",
         prompt_text="prompt",
     ))
 

@@ -95,6 +95,7 @@ src/harness/orchestrator.py             → harness.control, harness.events, har
                                            harness.services.analysis, harness.services.chat,
                                            harness.services.context, harness.services.doctor,
                                            harness.services.knowledge, harness.services.mode_router,
+                                           harness.services.profile_modes,
                                            harness.services.prompt_profiles, harness.services.workspace,
                                            harness.services.workspace_files,
                                            harness.commands.* (chat, compact, diagnostics, doctor,
@@ -142,7 +143,9 @@ src/harness/services/doctor.py          → harness.control, harness.events,
                                            harness.services.knowledge, runtime.protocol, runtime.types
 src/harness/services/knowledge.py       → harness.control, harness.core.persistence
 src/harness/services/knowledge_intents.py → (none)
-src/harness/services/mode_router.py     → observability, observability.events
+src/harness/services/mode_router.py     → harness.services.profile_modes, observability,
+                                           observability.events
+src/harness/services/profile_modes.py   → (none)
 src/harness/services/prompt_profiles.py → harness.tools.registry
 src/harness/services/provenance.py      → harness.core.db
 src/harness/services/repair.py          → (none)
@@ -218,7 +221,8 @@ src/worker/sandbox_bootstrap.py         → (subprocess; no static src.* imports
 - harness/status: `HarnessEventRefPayload`, `HarnessStatusSnapshot`
 - harness/services/workspace: `WorkspaceSummary`, `WorkspaceIngestResult`
 - harness/services/mode_router: `ProfileDecision`
-- harness/services/prompt_profiles: `PromptPackage` (mode/template_version/prompt_text/package_hash)
+- harness/services/profile_modes: `INTERACTION`, `ANALYST`, `KNOWLEDGE`, `CLARIFICATION`, `VALID_PROFILE_MODES` (canonical prompt-profile identifiers)
+- harness/services/prompt_profiles: `RenderedPrompt` (mode/template_version/prompt_text/package_hash)
 - app/events: `AppEvent`
 - app/tui/models: `WorkspaceView`, `AppView`
 
@@ -268,7 +272,7 @@ src/worker/sandbox_bootstrap.py         → (subprocess; no static src.* imports
 
 **`Orchestrator` (harness/orchestrator.py) is the hub:**
 - Builds: `ModeRouter` (services/mode_router.py) and `PromptProfileRegistry` (services/prompt_profiles.py) in `__init__` (`self.mode_router`/`self.prompt_profiles`); `ChatStore`, `ChatCompactor`, `RuntimeRequestBuilder` (services/chat.py); `Doctor`, `DoctorRunner` (services/doctor.py); `AnalysisService` (services/analysis.py); `WorkspaceFileService` (services/workspace_files.py); `ContextManager` (services/context.py); `HarnessStateMachine` (core/state_machine.py); `StatusBroker` (status.py); `AsyncWorkspaceManager` (services/workspace.py); `HarnessCommandRegistry` (core/command_registry.py); `HarnessToolRegistry` (tools/registry.py); `HarnessPersistence` (core/persistence.py); optional `KnowledgeManager` (services/knowledge.py)
-- Routes internally: `_select_profile(state, *, chat_id, user_input) -> str` calls `mode_router.route()`, keeps the prior non-interaction profile on ambiguous (`interaction`) routing, writes `state.active_agent_mode` IN PLACE on the live `RunStateRecord`, returns the mode; `run_agentic_turn` calls it and loads the package via `prompt_profiles.load(mode)`. `run_agentic_turn` has NO `requested_mode`/`prompt_provider` params; `run_turn` keeps an internal optional `requested_mode: str | None = None` (and `prompt_text`); `resume_with_clarification` carries `active_agent_mode` forward
+- Routes internally: `_select_profile(state, *, chat_id, user_input) -> str` calls `mode_router.route()`, keeps the prior non-interaction profile on ambiguous (`interaction`) routing, writes `state.active_agent_mode` IN PLACE on the live `RunStateRecord`, returns the mode; `run_agentic_turn` calls it and loads the package via `prompt_profiles.load(mode)`. `run_agentic_turn` has NO `requested_mode`/`prompt_provider` params; `run_turn` has NO `requested_mode` param either (reads `state.active_agent_mode` as the single source of truth; keeps `prompt_text`); `resume_with_clarification` mutates the live `RunStateRecord` in place (`state.state`/`pending_clarification_id`), preserving `active_agent_mode` for continuity
 - Has `tool_registry: HarnessToolRegistry` (initialized in `__init__`); `_register_tools()` wires `file_read` via `make_file_read_handler` (delegating to `WorkspaceFileService`), the `CONTROL_TOOL_NAMES` (`family="control"`) via `make_control_handler`, the model-facing analysis family (`analysis_plan`, `analysis_request_execution`) via `make_analysis_plan_handler` / `make_analysis_request_execution_handler` (delegating to `AnalysisService`), and the model-facing knowledge family (`knowledge_recall`, `knowledge_propose_update`) via `make_knowledge_recall_handler`/`make_knowledge_propose_update_handler`. `_dispatch_tool_call()` resolves handler/validate via `tool_registry` only (no `command_registry` fallback, no legacy `plan_analysis` alias, no special-cased `KNOWLEDGE_INTENTS` bypass), builds `ToolContext(chat_id=<active chat_id>)`, and re-yields handler events
 - Has `registry: HarnessCommandRegistry`; `_register_commands()` no longer holds inline descriptors — it lazily imports and delegates to family registrars in `harness.commands.*`: `register_doctor_commands` (doctor), `register_compact_commands` (compact), `register_diagnostics_commands` (help), `register_chat_commands` (create/list/view/resume/delete_chat), `register_workspace_commands` (workspace + list_files/inspect_file/read_file), `register_run_commands` (plan_analysis, request_execution, cancel_run, stop_after_current_step, revise_goal, retry_step, rerun_step, mark_result_trusted/invalidated, challenge_conclusion), `register_memory_commands` (memory_review, recall_knowledge), `register_provenance_commands` (inspect_artifact, provenance_inspect, validity_inspect). Legacy names such as `plan_analysis`, `request_execution`, `workspace_status`, and `workspace_inventory` remain Layer-4/user commands only and are not model-callable tools
 - Yields: every `HarnessEvent` subclass from harness/events.py
@@ -363,7 +367,8 @@ slash text or palette selection
 | `AsyncWorkspaceManager` | `src/harness/services/workspace.py` (ex-`workspace_async`, renamed) |
 | `WorkspaceFileService` | `src/harness/services/workspace_files.py` |
 | `ModeRouter` / `ProfileDecision` | `src/harness/services/mode_router.py` |
-| `PromptProfileRegistry` / `PromptPackage` / `MODE_TOOL_NAMES` / `_tool_catalog` | `src/harness/services/prompt_profiles.py` |
+| `INTERACTION` / `ANALYST` / `KNOWLEDGE` / `CLARIFICATION` / `VALID_PROFILE_MODES` | `src/harness/services/profile_modes.py` |
+| `PromptProfileRegistry` / `RenderedPrompt` / `MODE_TOOL_NAMES` / `_tool_catalog` | `src/harness/services/prompt_profiles.py` |
 | `AppStore` | `src/harness/core/app_store.py` |
 | `HarnessStateMachine` | `src/harness/core/state_machine.py` |
 | `HarnessCommandRegistry` | `src/harness/core/command_registry.py` |
@@ -542,22 +547,29 @@ Module marker only.
 **Notes:** imported only by `harness.tools.knowledge` (knowledge writes flow through the `knowledge_propose_update` tool handler)
 
 ### `src/harness/services/mode_router.py`
-**Imports:** `observability.{Telemetry, ...}`, `observability.events.{EventKind, Layer}`
+**Imports:** `harness.services.profile_modes.{INTERACTION, ANALYST, KNOWLEDGE, CLARIFICATION, VALID_PROFILE_MODES}`, `observability.{Telemetry, ...}`, `observability.events.{EventKind, Layer}`
 **Defines:**
 - **class** `ProfileDecision(BaseModel)` — `mode: str`, `reason: str`
 - **class** `ModeRouter` — keyword/LLM-fallback intent classifier
-  - `request_mode(user_text) -> ProfileDecision` — stable alias delegating to `route()`
-  - `route(user_text) -> ProfileDecision` — normalize/tokenize, match knowledge/analysis terms, optional cached LLM classifier, default `interaction`/`front_door_default`; emits telemetry at `Layer.HARNESS`
+  - `route(user_text) -> ProfileDecision` — normalize/tokenize, match knowledge/analysis terms, optional cached LLM classifier, default `interaction`/`front_door_default`; emits telemetry at `Layer.HARNESS` (no `request_mode` alias — single public entry point)
+  - class-level taxonomy frozensets: `rule_language_terms`, `column_language_terms` (plus `analysis_terms`, `transformation_terms`, etc.) consumed by `_transformation_match`
 **Notes:** Layer 3 service; built by `Orchestrator.__init__` as `self.mode_router`. Re-exported from `harness.services`.
+
+### `src/harness/services/profile_modes.py`
+**Imports:** (none)
+**Defines:**
+- **const** `INTERACTION`/`ANALYST`/`KNOWLEDGE`/`CLARIFICATION` — canonical mode strings (exact historical values; persistence-stable)
+- **const** `VALID_PROFILE_MODES: frozenset` — the closed set of the four
+**Notes:** Layer 3 single source of truth for prompt-profile identifiers; imported by `mode_router` and `orchestrator`. `prompt_profiles.MODE_TOOL_NAMES` keys intentionally stay literal (lookup-table data).
 
 ### `src/harness/services/prompt_profiles.py`
 **Imports:** `harness.tools.registry.HarnessToolRegistry`
 **Defines:**
-- **class** `PromptPackage(BaseModel)` — `mode`, `template_version`, `prompt_text`, `package_hash` (inline model; distinct from `harness/control.py` `PromptPackage(HarnessRecord)`)
+- **class** `RenderedPrompt(BaseModel)` — `mode`, `template_version`, `prompt_text`, `package_hash` (inline rendered-prompt value; renamed from `PromptPackage` to end the collision with `harness/control.py` `PromptPackage(HarnessRecord)`)
 - **var** `MODE_TOOL_NAMES` — dict `mode → model-facing tool names`
 - **func** `_tool_catalog(mode, tool_registry) -> str` — markdown tool catalog for the mode
 - **class** `PromptProfileRegistry`
-  - `load(mode) -> PromptPackage` — assembles `system.md` + persona + tool catalog + `response_format.md` from `src/harness/prompts/`, `template_version="v1"`, sha256 `package_hash`
+  - `load(mode) -> RenderedPrompt` — assembles `system.md` + persona + tool catalog + `response_format.md` from `src/harness/prompts/`, `template_version="v1"`, sha256 `package_hash`; per-mode cached
 **Notes:** Layer 3 service; built by `Orchestrator.__init__` as `self.prompt_profiles`. Re-exported from `harness.services`. Persona/operational prompts: `src/harness/prompts/{system,interaction,analyst,knowledge,clarification,response_format,doctor_narrator,compaction,doctor,knowledge_reconcile}.md`.
 
 ### `src/app/tui/__init__.py`
@@ -836,7 +848,7 @@ Re-exports `AppStore`, `AppPaths`, `WorkspacePaths`, `ActiveWorkspace`, `Workspa
 Empty package marker (no re-exports). Import kernel modules by full path, e.g. `harness.core.persistence`.
 
 ### `src/harness/services/__init__.py`
-Re-exports `AnalysisService`, `Doctor`, `DoctorRunner`, `TmpCleanupBlocked`, `ModeRouter`, `ProfileDecision`, `PromptPackage`, `PromptProfileRegistry`, `WorkspaceFileService`.
+Re-exports `AnalysisService`, `Doctor`, `DoctorRunner`, `TmpCleanupBlocked`, `ModeRouter`, `ProfileDecision`, `RenderedPrompt`, `PromptProfileRegistry`, `WorkspaceFileService`.
 
 ### `src/harness/core/app_store.py`
 **Defines:**
@@ -910,7 +922,7 @@ Re-exports `AnalysisService`, `Doctor`, `DoctorRunner`, `TmpCleanupBlocked`, `Mo
 - **class** `StepContract(HarnessRecord)` — input paths must be workspace-relative
 - **class** `ExecutionEnvelope(HarnessRecord)` — note: distinct from `worker.models.ExecutionEnvelope`
 - **class** `StepResult(HarnessRecord)`
-- **class** `PromptPackage(HarnessRecord)` — distinct from `harness.services.prompt_profiles.PromptPackage`
+- **class** `PromptPackage(HarnessRecord)` — persisted run record; sole `PromptPackage` (services rendered-prompt value is now `RenderedPrompt`, collision resolved)
 - **class** `DoctorReport(HarnessRecord)`
 - **class** `TmpAction(HarnessRecord)` — delete/promote/keep
 - **class** `ReviewProposal(HarnessRecord)`, `MemoryUpdateProposal(HarnessRecord)`
@@ -928,6 +940,7 @@ Re-exports `AnalysisService`, `Doctor`, `DoctorRunner`, `TmpCleanupBlocked`, `Mo
   - `save_record(table, key_name, key_value, record)` — upsert via `json_extract`
   - `load_record(...)`
   - `list_records(table) -> list[dict]` — full table scan
+  - `list_records_where(table, key_name, key_value) -> list[dict]` — keyed `json_extract` multi-row query (used by `doctor._collect_tmp_actions`)
 
 (Deleted shims: `src/harness/doctor.py`, `src/harness/doctor_runner.py`, and `src/harness/commands.py` no longer exist. Canonical: `harness.services.doctor` for `Doctor`/`DoctorRunner`/`PHASES`/`PROMOTION_TARGETS`/`TmpCleanupBlocked`; `harness.core.command_registry` for `HarnessCommandRegistry`. The `src/harness/commands/` PACKAGE of real command modules is unrelated and still exists.)
 
@@ -1020,7 +1033,7 @@ Re-exports `AnalysisService`, `Doctor`, `DoctorRunner`, `TmpCleanupBlocked`, `Mo
 **Notes:** spec §6.13 + §10.8; reuse blocked unless source validity is `ok`/`revalidated`
 
 ### `src/harness/orchestrator.py`
-**Imports:** `harness.{control, events, exceptions, status}` (shared contracts); `harness.core.{analysis_flow, command_registry, persistence, state_machine}`; `harness.services.{analysis, chat, context, doctor, knowledge, mode_router, prompt_profiles, workspace, workspace_files}`; `harness.tools.*`; `harness.commands.*` (lazy, in `_register_commands`); `worker.{executor,models,policy}`; `observability`; `runtime.{protocol,types}`
+**Imports:** `harness.{control, events, exceptions, status}` (shared contracts); `harness.core.{analysis_flow, command_registry, persistence, state_machine}`; `harness.services.{analysis, chat, context, doctor, knowledge, mode_router, profile_modes, prompt_profiles, workspace, workspace_files}`; `harness.tools.*`; `harness.commands.*` (lazy, in `_register_commands`); `worker.{executor,models,policy}`; `observability`; `runtime.{protocol,types}`
 **Defines:**
 - **func** `_sanitize_assistant_text(text)` — strips leaked assistant draft and Gemma turn markers before chat persistence
 - **func** `_summarize_step_execution(workspace_dir, envelope)` — status-aware final message for worker results/failures
@@ -1045,8 +1058,8 @@ Re-exports `AnalysisService`, `Doctor`, `DoctorRunner`, `TmpCleanupBlocked`, `Mo
   - **run lock:** `_acquire_run(run_id)` raises `RunAlreadyActive`; `_release_run`
   - **chat ops:** `create_chat`, `list_chats`, `view_chat`, `delete_chat`, `resume_chat`, `compact_chat_history`
   - **profile routing:** `_select_profile(state, *, chat_id, user_input) -> str` — calls `self.mode_router.route(user_input).mode`; if routed `interaction` and a prior non-interaction profile exists, keep the prior (continuity); writes `state.active_agent_mode` IN PLACE on the live `RunStateRecord` (not a model_copy); returns the chosen mode. Built deps: `self.mode_router` (`ModeRouter`), `self.prompt_profiles` (`PromptProfileRegistry`) in `__init__`.
-  - **turn:** `run_turn(state, *, workspace_dir, chat_id, user_input, requested_mode=None, prompt_text=None, durable_context="", persist_user_message=True) -> AsyncIterator[HarnessEvent]` — single-stream; `requested_mode`/`prompt_text` are internal optionals for self-reuse, not app injection; emits `TurnPaused`/`TurnFailed(empty_output)` instead of hollow asg_ rows
-  - **agentic turn:** `run_agentic_turn(state, *, workspace_dir, chat_id, user_input, max_iterations=4) -> AsyncIterator[HarnessEvent]` — NO `requested_mode`/`prompt_provider` params; calls `_select_profile` then `self.prompt_profiles.load(mode).prompt_text`. Bounded multi-iteration loop: sticky-analyst override (in-flight `AnalysisFlow` forces analyst mode, emits `ModeHandoffAccepted(reason="analysis_flow_sticky")`) → ensure INSPECTING flow on analyst entry → APPROVAL_PENDING hybrid branch (deterministic approve/reject/show, free-form grounds the analyst turn) → build durable context → run_turn → dispatch tool_calls → handle handoffs/empty-output/malformed-tool/plan-repair retry → prose-only-in-analyst drives forced plan emission (Gap A) → ApprovalRequired termination. `resume_with_clarification` sets `cleared.active_agent_mode = state.active_agent_mode` for profile continuity. Layer-3 owned per spec §6.3 / §8.1.
+  - **turn:** `run_turn(state, *, workspace_dir, chat_id, user_input, prompt_text=None, durable_context="", persist_user_message=True) -> AsyncIterator[HarnessEvent]` — single-stream; reads `state.active_agent_mode` as the single source of truth (no `requested_mode` param); `prompt_text` is an internal optional for self-reuse, not app injection; emits `TurnPaused`/`TurnFailed(empty_output)` instead of hollow asg_ rows
+  - **agentic turn:** `run_agentic_turn(state, *, workspace_dir, chat_id, user_input, max_iterations=4) -> AsyncIterator[HarnessEvent]` — NO `requested_mode`/`prompt_provider` params; calls `_select_profile` then `self.prompt_profiles.load(mode).prompt_text`. Bounded multi-iteration loop: sticky-analyst override (in-flight `AnalysisFlow` forces analyst mode, emits `ModeHandoffAccepted(reason="analysis_flow_sticky")`) → ensure INSPECTING flow on analyst entry → APPROVAL_PENDING hybrid branch (deterministic approve/reject/show, free-form grounds the analyst turn) → build durable context → run_turn → dispatch tool_calls → handle handoffs/empty-output/malformed-tool/plan-repair retry → prose-only-in-analyst drives forced plan emission (Gap A) → ApprovalRequired termination. `resume_with_clarification` mutates the live `RunStateRecord` in place (sets `state.state`/`state.pending_clarification_id`, no `model_copy`), preserving `active_agent_mode` for profile continuity. Layer-3 owned per spec §6.3 / §8.1.
   - **analysis flow registry:** `_append_analysis_flow`/`_replay_analysis_flows` (prunes terminal/dropped), `_get_flow`/`_set_phase`/`_drop_flow`/`_ensure_inspecting_flow`/`_find_flow_by_plan`; `_force_plan_tool_call(state, *, flow, workspace_dir, chat_id, run_id, correction=None) -> dict|None` — dedicated non-persisted gen (`stop=["</tool_call>"]`) parsed via `runtime.tool_calls.parse_tool_call_block`, validates code-free `analysis_plan` args; `_classify_approval_intent`/`_looks_like_plan_intent`/`_summarize_inspection`/`_plan_brief` helpers
   - **tool dispatch:** `_dispatch_tool_call(state, name, args, *, chat_id=None) -> AsyncIterator[HarnessEvent]` — routes every name via `tool_registry.get_handler(name)`/`tool_registry.validate(name, args)` (tool-only; no `command_registry` fallback, no `KNOWLEDGE_INTENTS` bypass — knowledge writes now flow through the `knowledge_propose_update` tool handler which calls `knowledge_intents.handle_knowledge_intent(run_id=ctx.run_id, ...)`), builds a `ToolContext`; re-yields handler events
   - **context block:** `_build_durable_context_block(workspace_id, workspace_dir, user_query="") -> str` — adds query-relevant memory notes
@@ -1336,7 +1349,7 @@ Re-exports `PythonStepExecutor` (executor); `ExecutionEnvelope`, `ExecutionStatu
 |------|---------------|
 | `RunState` | `harness/control.py` (StrEnum, full lifecycle) vs `app/tui/models.py` (StrEnum, idle/running/stopping/error) |
 | `ExecutionEnvelope` | `harness/control.py` (Pydantic record) vs `worker/models.py` (worker result) |
-| `PromptPackage` | `harness/control.py` (HarnessRecord) vs `harness/services/prompt_profiles.py` (BaseModel for prompt assembly) |
+| `PromptPackage` | `harness/control.py` (HarnessRecord, persisted run record) — sole owner; the services rendered-prompt value was renamed `RenderedPrompt`, collision resolved 2026-05-18 |
 | `PromptProfileRegistry` vs `HarnessPromptRegistry` | `harness/services/prompt_profiles.py` (persona prompt assembly) vs `harness/core/prompt_registry.py` (narrow operational prompts) |
 | `workspace` | `harness/core/workspace.py` (kernel store) vs `harness/services/workspace.py` (async manager, ex-`workspace_async`) vs `harness/services/workspace_files.py` (file inventory/schema) |
 

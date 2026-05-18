@@ -51,7 +51,6 @@ async def test_orchestrator_builds_prompt_and_calls_single_runtime(tmp_path: Pat
         workspace_dir=workspace,
         chat_id="c1",
         user_input="show status",
-        requested_mode="interaction",
         prompt_text="You are the interaction mode for the local data analysis application.",
     )]
     final = next(e for e in events if e.event_name == "FinalMessage")

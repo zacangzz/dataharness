@@ -561,10 +561,11 @@ class DoctorRunner:
         if self.persistence is None:
             return []
         try:
-            rows = self.persistence.db.list_records("tmp_actions")
-        except Exception:
+            return self.persistence.db.list_records_where(
+                "tmp_actions", "doctor_report_id", report_id
+            )
+        except Exception:  # noqa: BLE001 - persistence backend missing/empty
             return []
-        return [r for r in rows if r.get("doctor_report_id") == report_id]
 
     @staticmethod
     def _fallback_narration(
@@ -649,7 +650,7 @@ class DoctorRunner:
         findings_payload = [
             {"category": f.category, "severity": f.severity,
              "summary": f.summary, "details": f.details}
-            for f in (findings or [])
+            for f in findings
         ]
         narration = await self._render_narration(findings_payload, action_summaries)
         yield DoctorNarrationReady(

@@ -116,6 +116,19 @@ class WorkspaceDb:
         rows = self.conn.execute(f"select record_json from {table}").fetchall()
         return [json.loads(row[0]) for row in rows]
 
+    def list_records_where(
+        self, table: str, key_name: str, key_value: str
+    ) -> list[dict[str, object]]:
+        if table not in AUTHORITATIVE_TABLES:
+            raise ValueError(f"unknown table: {table}")
+        _validate_key_name(key_name)
+        rows = self.conn.execute(
+            f"select record_json from {table} "
+            f"where json_extract(record_json, '$.{key_name}') = ?",
+            (key_value,),
+        ).fetchall()
+        return [json.loads(row[0]) for row in rows]
+
     def load_record(self, table: str, key_name: str, key_value: str) -> dict[str, object]:
         if table not in AUTHORITATIVE_TABLES:
             raise ValueError(f"unknown table: {table}")

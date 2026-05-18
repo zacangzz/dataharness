@@ -8,6 +8,10 @@ from pydantic import BaseModel
 from observability import Telemetry, resolve_telemetry_dir
 from observability.events import EventKind, Layer
 
+from harness.services.profile_modes import (
+    INTERACTION, ANALYST, KNOWLEDGE, CLARIFICATION, VALID_PROFILE_MODES,
+)
+
 
 class ProfileDecision(BaseModel):
     mode: str
@@ -45,6 +49,12 @@ class ModeRouter:
         "classify", "column", "columns", "field", "fields", "lookup", "enrich",
         "one", "hot", "moving", "rolling", "lag", "lead", "cumulative",
     }
+    rule_language_terms = frozenset({
+        "derive", "derived", "transform", "transformed", "normalize", "normalized",
+        "encode", "bucket", "map", "join", "merge", "flag", "classify", "lookup",
+        "enrich", "moving", "rolling", "lag", "lead", "cumulative",
+    })
+    column_language_terms = frozenset({"column", "columns", "field", "fields"})
     workspace_reference_patterns = (
         ".csv", ".tsv", ".parquet", ".xlsx", ".xls", "data/", "@data/",
     )
@@ -57,16 +67,12 @@ class ModeRouter:
         "means", "teach", "metric",
     }
 
-    def request_mode(self, user_text: str) -> ProfileDecision:
-        """Stable public entry point that delegates to route(); kept for callers and tests that use the historical name."""
-        return self.route(user_text)
-
     def route(self, user_text: str) -> ProfileDecision:
         normalized = user_text.lower()
         words = {w for w in re.split(r"[^a-z0-9_]+", normalized) if w}
 
         if words & self.knowledge_terms:
-            decision = ProfileDecision(mode="knowledge", reason="knowledge_capture_intent")
+            decision = ProfileDecision(mode=KNOWLEDGE, reason="knowledge_capture_intent")
             self._emit_decision(decision, user_text)
             return decision
 
@@ -75,17 +81,17 @@ class ModeRouter:
             or self._phrase_match(normalized)
             or self._transformation_match(normalized, words)
         ):
-            decision = ProfileDecision(mode="analyst", reason="analysis_intent")
+            decision = ProfileDecision(mode=ANALYST, reason="analysis_intent")
             self._emit_decision(decision, user_text)
             return decision
 
         classified = self._classify_with_llm(user_text)
-        if classified is not None and classified != "interaction":
+        if classified is not None and classified != INTERACTION:
             decision = ProfileDecision(mode=classified, reason="llm_classifier")
             self._emit_decision(decision, user_text)
             return decision
 
-        decision = ProfileDecision(mode="interaction", reason="front_door_default")
+        decision = ProfileDecision(mode=INTERACTION, reason="front_door_default")
         self._emit_decision(decision, user_text)
         return decision
 
@@ -95,13 +101,9 @@ class ModeRouter:
     def _transformation_match(self, normalized: str, words: set[str]) -> bool:
         if not (words & self.transformation_terms):
             return False
-        has_workspace_ref = any(pattern in normalized for pattern in self.workspace_reference_patterns)
-        has_column_language = bool(words & {"column", "columns", "field", "fields"})
-        has_rule_language = bool(words & {
-            "derive", "derived", "transform", "transformed", "normalize", "normalized",
-            "encode", "bucket", "map", "join", "merge", "flag", "classify", "lookup",
-            "enrich", "moving", "rolling", "lag", "lead", "cumulative",
-        })
+        has_workspace_ref = any(p in normalized for p in self.workspace_reference_patterns)
+        has_column_language = bool(words & self.column_language_terms)
+        has_rule_language = bool(words & self.rule_language_terms)
         one_hot = {"one", "hot"} <= words
         min_max = {"min", "max"} <= words and bool(words & {"normalize", "normalized"})
         return has_workspace_ref or has_column_language or has_rule_language or one_hot or min_max
@@ -116,7 +118,7 @@ class ModeRouter:
             result = self.llm_classifier(user_text)
         except Exception:  # noqa: BLE001
             return None
-        if result in {"interaction", "analyst", "knowledge", "clarification"}:
+        if result in VALID_PROFILE_MODES:
             self._classifier_cache[user_text] = result
             return result
         return None

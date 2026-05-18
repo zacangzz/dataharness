@@ -56,7 +56,6 @@ async def test_orchestrator_checks_token_pressure_and_streams(tmp_path: Path) ->
         workspace_dir=workspace,
         chat_id="c1",
         user_input="hi",
-        requested_mode="interaction",
         prompt_text="prompt",
     )]
 

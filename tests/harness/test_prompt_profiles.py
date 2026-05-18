@@ -22,3 +22,14 @@ def test_profile_package_hash_stable(tmp_path):
     a = reg.load("analyst")
     b = reg.load("analyst")
     assert a.package_hash == b.package_hash
+
+
+def test_load_returns_rendered_prompt_type():
+    from harness.services import RenderedPrompt
+    from harness.services.prompt_profiles import RenderedPrompt as RP2
+
+    reg = PromptProfileRegistry(Path("src/harness/prompts"))
+    pkg = reg.load("interaction")
+    assert isinstance(pkg, RenderedPrompt)
+    assert RenderedPrompt is RP2
+    assert pkg.prompt_text and pkg.package_hash

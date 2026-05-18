@@ -14,7 +14,7 @@ class FakeOrchestrator:
         self.run_calls = 0
         self._active = False
 
-    async def run_turn(self, state, *, workspace_dir, chat_id, user_input, requested_mode=None, prompt_text=None, durable_context=""):
+    async def run_turn(self, state, *, workspace_dir, chat_id, user_input, prompt_text=None, durable_context=""):
         if self._active:
             raise RunAlreadyActive(run_id="x")
         self._active = True
@@ -22,7 +22,7 @@ class FakeOrchestrator:
             from datetime import UTC, datetime
             yield TurnStarted(
                 ts=datetime.now(UTC), workspace_id="w", chat_id=chat_id, run_id="r",
-                turn_id="t", user_message_id="u", active_mode=requested_mode or "interaction",
+                turn_id="t", user_message_id="u", active_mode=state.active_agent_mode,
             )
             yield FinalMessage(
                 ts=datetime.now(UTC), workspace_id="w", chat_id=chat_id, run_id="r",
@@ -37,7 +37,7 @@ class FakeOrchestrator:
         # Single-iteration shim that delegates to run_turn for the AppSession test.
         async for ev in self.run_turn(
             state, workspace_dir=workspace_dir, chat_id=chat_id, user_input=user_input,
-            requested_mode=state.active_agent_mode, prompt_text="", durable_context="",
+            prompt_text="", durable_context="",
         ):
             yield ev
 

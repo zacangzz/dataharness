@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from harness.tools.registry import HarnessToolRegistry
 
 
-class PromptPackage(BaseModel):
+class RenderedPrompt(BaseModel):
     mode: str
     template_version: str
     prompt_text: str
@@ -44,9 +44,11 @@ MODE_TOOL_NAMES = {
 def _tool_catalog(mode: str, tool_registry: HarnessToolRegistry | None) -> str:
     if tool_registry is None:
         tool_lines = "- (no harness tools available)"
+        tool_names = MODE_TOOL_NAMES.get(mode, [])
     else:
+        descs = tool_registry.list_tools()
         lines = []
-        for desc in tool_registry.list_tools():
+        for desc in descs:
             args_parts = []
             for arg in desc.arguments:
                 suffix = "" if arg.required else "?"
@@ -54,10 +56,8 @@ def _tool_catalog(mode: str, tool_registry: HarnessToolRegistry | None) -> str:
             args_str = ", ".join(args_parts)
             lines.append(f"- `{desc.name}({args_str})` — {desc.short_description}")
         tool_lines = "\n".join(lines) or "- (no harness tools available)"
-    tool_names = MODE_TOOL_NAMES.get(mode, [])
-    if tool_registry is not None:
-        registered_names = {desc.name for desc in tool_registry.list_tools()}
-        tool_names = [name for name in tool_names if name in registered_names]
+        registered_names = {desc.name for desc in descs}
+        tool_names = [name for name in MODE_TOOL_NAMES.get(mode, []) if name in registered_names]
     allowed_lines = "\n".join(f"- `{name}`" for name in tool_names) or "- (no mode-specific tools)"
     return "\n".join(
         [
@@ -84,8 +84,12 @@ class PromptProfileRegistry:
     ) -> None:
         self.prompts_dir = prompts_dir
         self.tool_registry = tool_registry
+        self._cache: dict[str, RenderedPrompt] = {}
 
-    def load(self, mode: str) -> PromptPackage:
+    def load(self, mode: str) -> RenderedPrompt:
+        cached = self._cache.get(mode)
+        if cached is not None:
+            return cached
         parts = []
         system_prompt = self.prompts_dir / "system.md"
         if system_prompt.exists():
@@ -99,9 +103,11 @@ class PromptProfileRegistry:
         )
         prompt_text = "\n\n".join(parts)
         package_hash = hashlib.sha256(prompt_text.encode("utf-8")).hexdigest()
-        return PromptPackage(
+        package = RenderedPrompt(
             mode=mode,
             template_version="v1",
             prompt_text=prompt_text,
             package_hash=package_hash,
         )
+        self._cache[mode] = package
+        return package

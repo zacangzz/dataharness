@@ -16,8 +16,12 @@ def test_router_defaults_to_interaction():
     assert r.route("hello there").mode == "interaction"
 
 
-def test_request_mode_delegates_to_route():
+def test_route_is_deterministic():
     r = ModeRouter()
-    decision = r.request_mode("count the rows in data/sales.csv")
+    decision = r.route("count the rows in data/sales.csv")
     assert decision.mode == "analyst"
     assert decision == r.route("count the rows in data/sales.csv")
+
+
+def test_request_mode_alias_removed():
+    assert not hasattr(ModeRouter, "request_mode")

@@ -40,6 +40,7 @@ from harness.services.analysis import AnalysisService
 from harness.services.doctor import Doctor, DoctorRunner
 from harness.services.mode_router import ModeRouter
 from harness.services.prompt_profiles import PromptProfileRegistry
+from harness.services.profile_modes import INTERACTION, ANALYST
 from harness.services.workspace_files import WorkspaceFileService
 from harness.tools.analysis import (
     make_analysis_plan_handler, make_analysis_request_execution_handler,
@@ -1450,11 +1451,11 @@ class Orchestrator:
         non-interaction profile (continuity for clarification / follow-ups).
         The chosen profile is written back into the *same* RunStateRecord
         object (not a model_copy) so the long-lived TUI state stays correct.
-        chat_id is accepted for telemetry; the body does not use it yet, but keeping a stable signature avoids churn when observability is wired in.
+        chat_id is reserved for routing telemetry; unused in the body today.
         """
         routed = self.mode_router.route(user_input).mode
         prior = state.active_agent_mode
-        if routed == "interaction" and prior and prior != "interaction":
+        if routed == INTERACTION and prior and prior != INTERACTION:
             chosen = prior
         else:
             chosen = routed
@@ -1485,7 +1486,7 @@ class Orchestrator:
         if (
             sticky_flow is not None
             and not sticky_flow.is_terminal()
-            and active_mode != "analyst"
+            and active_mode != ANALYST
         ):
             yield ModeHandoffAccepted(
                 ts=datetime.now(UTC), workspace_id=state.workspace_id,
@@ -1497,9 +1498,9 @@ class Orchestrator:
                 "run_agentic_turn sticky_override chat_id=%s routed=%s -> analyst phase=%s",
                 chat_id, active_mode, sticky_flow.phase,
             )
-            active_mode = "analyst"
-            state.active_agent_mode = "analyst"
-        if active_mode == "analyst":
+            active_mode = ANALYST
+            state.active_agent_mode = ANALYST
+        if active_mode == ANALYST:
             self._ensure_inspecting_flow(state, chat_id, user_input)
         prompt_text = self.prompt_profiles.load(active_mode).prompt_text
         durable = await self._build_durable_context_block(state.workspace_id, workspace_dir, user_query=user_input)
@@ -1592,7 +1593,7 @@ class Orchestrator:
 
             async for ev in self.run_turn(
                 state, workspace_dir=workspace_dir, chat_id=chat_id,
-                user_input=current_input, requested_mode=active_mode,
+                user_input=current_input,
                 prompt_text=prompt_text, durable_context=durable,
                 persist_user_message=first_iter,
             ):
@@ -1639,7 +1640,7 @@ class Orchestrator:
                 active_mode = handoff_target
                 prompt_text = self.prompt_profiles.load(handoff_target).prompt_text
                 state.active_agent_mode = handoff_target
-                if handoff_target == "analyst":
+                if handoff_target == ANALYST:
                     self._ensure_inspecting_flow(state, chat_id, user_input)
                 current_input = user_input  # re-run original under new mode
                 first_iter = False
@@ -2053,14 +2054,13 @@ class Orchestrator:
         workspace_dir: Path,
         chat_id: str,
         user_input: str,
-        requested_mode: str | None = None,
         prompt_text: str | None = None,
         durable_context: str = "",
         persist_user_message: bool = True,
     ) -> AsyncIterator[HarnessEvent]:
         run_id = state.run_id
         cancel = await self._acquire_run(run_id)
-        active_mode = requested_mode or state.active_agent_mode
+        active_mode = state.active_agent_mode
         turn_id = f"turn_{uuid4().hex[:12]}"
         user_msg_id = f"msg_{uuid4().hex[:12]}"
         ts = datetime.now(UTC)
@@ -2507,10 +2507,12 @@ class Orchestrator:
         state: RunStateRecord,
         clarification_text: str,
     ) -> AsyncIterator[HarnessEvent]:
-        cleared = state.model_copy(update={"state": RunState.CLARIFYING, "pending_clarification_id": None})
-        cleared.active_agent_mode = state.active_agent_mode  # explicit: profile continuity across clarification resume (model_copy already carries it; kept to document intent)
+        # In-place mutation keeps the long-lived TUI RunStateRecord correct and
+        # preserves active_agent_mode for profile continuity across the resume.
+        state.state = RunState.CLARIFYING
+        state.pending_clarification_id = None
         async for ev in self.run_turn(
-            cleared, workspace_dir=workspace_dir, chat_id=state.run_id,
+            state, workspace_dir=workspace_dir, chat_id=state.run_id,
             user_input=clarification_text,
         ):
             yield ev
