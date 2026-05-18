@@ -23,7 +23,7 @@ Skim the **Top-level Indices** for navigation, then drop into **Per-file Invento
 | 2 — Runtime | `src/runtime/` | LLM streaming (llama.cpp), tool-call parsing |
 | 0 — Observability | `src/observability/` | Telemetry events, structured logging, path resolution |
 
-**Hard rule (per `factory.py`):** Layer 4 must NOT import `runtime.*` directly. Layer 4 obtains a wired `Orchestrator` via `harness.factory.build_orchestrator`.
+**Hard rule (per `core/factory.py`):** Layer 4 must NOT import `runtime.*` directly. Layer 4 obtains a wired `Orchestrator` via `harness.core.factory.build_orchestrator`.
 
 **Memory write rule (per `harness/services/knowledge.py`):** only `KnowledgeManager` may write under `memory/`. `guarded_external_memory_write` always raises.
 
@@ -37,7 +37,7 @@ Skim the **Top-level Indices** for navigation, then drop into **Per-file Invento
 
 ```
 src/cli.py
-  → harness, observability, worker.sandbox_bootstrap (private `-m` dispatch; no app.* imports; constructs DataHarnessApp via harness.factory)
+  → harness, observability, worker.sandbox_bootstrap (private `-m` dispatch; no app.* imports; constructs DataHarnessApp via harness.core.factory; workspace via harness.core.workspace)
 
 src/app/__init__.py                     → (none)
 src/app/events.py                       → (none)
@@ -464,7 +464,8 @@ slash text or palette selection
 - **func** `_dispatch_private_module(argv) -> int | None` — handles packaged private `-m worker.sandbox_bootstrap <config>` before TUI startup
 - **func** `main() -> None` — entry: private worker dispatch if requested, else parse → configure logging+telemetry → build → run app
 **Internal calls:**
-- `harness.factory.build_orchestrator` (wires Layer 3)
+- `harness.core.factory.build_orchestrator` (wires Layer 3)
+- `harness.core.workspace.WorkspaceManager` (open default/named workspace)
 - `runtime.llama_cpp_runtime.LlamaCppRuntime(config, telemetry)`
 - `worker.sandbox_bootstrap.main()` (private packaged worker subprocess path)
 - `app.tui.app.DataHarnessApp(...)`
@@ -623,6 +624,7 @@ Marker.
 **Notes:**
 - `_subscribe_status` runs as background worker (Textual) — subscribes to orchestrator status broker
 - `_trace: RunTrace` ring-buffers phase lines for `WorkspaceBar` + `SidebarPane`
+- Completed turns and successful resource commands schedule `_refresh_sidebar_resources()` so chat counts, chat create/delete, and file lists stay synchronized with Layer 3 persistence.
 - Approval/clarification/doctor action review are inline banner flows, not full-screen modals
 
 ### `src/app/tui/clipboard.py`
@@ -722,7 +724,7 @@ Marker.
 **Defines:**
 - **class** `WorkspaceBar(Static)` — header strip; `update_from(...)`
 - **class** `ConversationPane(VerticalScroll)` — transcript + streaming buffer
-  - `append_user/append_assistant/append_assistant_delta/finalize_assistant/discard_streaming/text_buffer/rehydrate_from_record/_refresh_text`; `append_assistant_delta` appends text deltas only and drops reasoning/tool-call deltas from the transcript
+  - `append_user/append_assistant/append_assistant_delta/finalize_assistant/discard_streaming/clear/text_buffer/rehydrate_from_record/_refresh_text`; `append_assistant_delta` appends text deltas only and drops reasoning/tool-call deltas from the transcript
 - **class** `SidebarPane(VerticalScroll)` — composes per-section widgets (Workspace/Chats/Files/Trace/Commands/Doctor/Failures); routes update calls to children + `SidebarState`; aggregates `text_buffer` from `SidebarState`
   - `compose`, `update_status`, `update_files(files)`, `update_chats(chats)` (accepts `list[str]` or `list[ChatSummary]`), `command_started/progress/completed`, `append_doctor_finding`, `doctor_report`, `failure`, `update_trace`, `text_buffer`, `_brief_result`
 - **class** `PlanPane(Static)` — `render_plan(plan)`
@@ -1070,7 +1072,7 @@ Re-exports `AnalysisService`, `Doctor`, `DoctorRunner`, `TmpCleanupBlocked`, `Mo
   - **artifact promotion:** `_promote_step_artifacts(workspace_dir, step_result_path, run_id) -> list[Path]` — copies successful step outputs from tmp/ to artifacts/ and memory/functions/
   - `prepare_worker_dispatch(plan, *, approval) -> dict` — validates code-exec approval
   - `_build_plan_from_arguments(state, *, goal, steps) -> tuple[Plan, list[StepContract]]` — compatibility delegate to `AnalysisService.build_plan_from_arguments`
-  - `_generate_step_code(state, *, step, workspace_dir, correction=None) -> list[str]` — gen-2: internal, non-persisted runtime generation (`stop=["```"]`), parses fenced ```` ```python ```` via `runtime.tool_calls.extract_fenced_code`; schema-aware prompt (`_GEN2_SYSTEM_PROMPT`)
+  - `_generate_step_code(state, *, step, workspace_dir, correction=None) -> list[str]` — gen-2: internal, non-persisted runtime generation (NO `stop` — a ``` stop collides with the prompt-mandated opening fence and truncates to empty), parses full fenced ```` ```python ```` via `runtime.tool_calls.extract_fenced_code`; schema-aware prompt (`_GEN2_SYSTEM_PROMPT`)
   - `_assemble_plan_events(...)`, `_validate_generated_step(...)`, `_finalize_plan(...)`, `_analysis_plan_events(...)`, `_analysis_request_execution_events(...)` — compatibility delegates to `AnalysisService`
   - `_handle_plan_analysis(ctx, args)` / `_handle_request_execution(ctx, args)` — command-only wrappers around `AnalysisService`; emit PlanReady + ApprovalRequired
   - `switch_workspace(state, *, new_workspace_id) -> RunStateRecord`

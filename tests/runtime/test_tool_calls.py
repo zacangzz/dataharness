@@ -31,6 +31,34 @@ def test_parse_tool_call_block_rejects_invalid_json() -> None:
         parse_tool_call_block('<tool_call>{"name":"doctor",</tool_call>')
 
 
+def test_parse_tool_call_block_accepts_python_dict_literal() -> None:
+    # Small local LLMs frequently emit Python dict literals (single quotes)
+    # instead of JSON. This is the exact raw from chat_8c53c7840bf0.
+    payload = (
+        "<tool_call>{'name':'file_read', 'arguments': "
+        "{'operation': 'inspect', 'path': 'data/employees.csv'}}</tool_call>"
+    )
+    parsed = parse_tool_call_block(payload)
+    assert parsed.name == "file_read"
+    assert parsed.arguments == {"operation": "inspect", "path": "data/employees.csv"}
+
+
+def test_parse_tool_call_block_accepts_python_constants() -> None:
+    payload = "<tool_call>{'name': 'doctor', 'arguments': {'deep': True, 'note': None}}</tool_call>"
+    parsed = parse_tool_call_block(payload)
+    assert parsed.name == "doctor"
+    assert parsed.arguments == {"deep": True, "note": None}
+
+
+def test_repair_tool_call_block_normalizes_python_dict_literal() -> None:
+    repaired = repair_tool_call_block(
+        "<tool_call>{'name':'file_read', 'arguments': {'path': 'data/employees.csv'}}</tool_call>"
+    )
+    assert repaired == (
+        '<tool_call>{"name":"file_read","arguments":{"path":"data/employees.csv"}}</tool_call>'
+    )
+
+
 def test_repair_tool_call_block_wraps_single_object_arguments() -> None:
     repaired = repair_tool_call_block('<tool_call>{"name":"doctor","arguments":"manual"}</tool_call>')
     assert repaired == '<tool_call>{"name":"doctor","arguments":{"value":"manual"}}</tool_call>'

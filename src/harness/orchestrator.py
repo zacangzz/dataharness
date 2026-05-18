@@ -2541,10 +2541,13 @@ class Orchestrator:
     ) -> list[str]:
         """Gen-2: internal, non-persisted generation of one step's Python.
 
-        The model writes a fenced ```python block (no JSON escaping). The
-        runtime stops at the closing fence (`stop=["```"]`). Returns the
-        fenced code as `code_lines`; empty list when nothing usable came back
-        (the caller decides whether to retry or fail).
+        The model writes a full fenced ```python block (no JSON escaping) and
+        nothing after it, stopping on EOS; `_GEN2_MAX_TOKENS` bounds it. No
+        `stop` sequence is sent: a ``` stop would collide with the *opening*
+        fence the prompt mandates and truncate generation to nothing.
+        `extract_fenced_code` trims any trailing content and tolerates a
+        missing close fence. Returns the fenced code as `code_lines`; empty
+        list when nothing usable came back (caller retries or fails).
         """
         purpose = str(step.get("purpose") or "").strip()
         declared_inputs = [str(p) for p in (step.get("declared_inputs") or [])]
@@ -2567,7 +2570,6 @@ class Orchestrator:
                 RuntimeMessage(role="user", content="\n".join(user_lines)),
             ],
             max_completion_tokens=_GEN2_MAX_TOKENS,
-            stop=["```"],
             request_id=f"req_{uuid4().hex[:12]}",
             correlation_id=state.run_id,
         )

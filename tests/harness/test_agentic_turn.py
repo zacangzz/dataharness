@@ -67,10 +67,17 @@ class FakeRuntime:
         self.calls.append(request)
         scenario = self.scenarios.pop(0) if self.scenarios else _Scenario()
         seq = 0
-        if scenario.text:
+        text = scenario.text
+        # Mimic llama.cpp: generation halts at the FIRST occurrence of any
+        # stop string (and the stop string itself is not emitted).
+        for s in request.stop or []:
+            cut = text.find(s)
+            if cut != -1:
+                text = text[:cut]
+        if text:
             yield RuntimeEvent(
                 type="text_delta", request_id=request.request_id, seq=seq,
-                text=scenario.text,
+                text=text,
             )
             seq += 1
         for tc in scenario.tool_calls:
@@ -664,9 +671,10 @@ async def test_exhausted_malformed_retry_yields_final_message(tmp_path, workspac
 
 @pytest.mark.asyncio
 async def test_generate_step_code_returns_fenced_code_lines(tmp_path, workspace):
-    """Gen-2: _generate_step_code runs an internal, non-persisted generation,
-    stops at the closing fence, and returns the fenced Python as code_lines.
-    The prompt must carry the step purpose + workspace schema."""
+    """Gen-2: _generate_step_code runs an internal, non-persisted generation
+    and returns the fenced Python as code_lines. No `stop` is sent (a ``` stop
+    would truncate at the opening fence the prompt mandates). The prompt must
+    carry the step purpose + workspace schema."""
     fenced = (
         "Sure, here is the code:\n"
         "```python\n"
@@ -696,7 +704,7 @@ async def test_generate_step_code_returns_fenced_code_lines(tmp_path, workspace)
     ]
     assert len(runtime.calls) == 1
     req = runtime.calls[0]
-    assert req.stop == ["```"]
+    assert not req.stop  # a ``` stop would truncate the opening fence
     # standalone generation: only system+user, no chat history rows
     assert [m.role for m in req.messages] == ["system", "user"]
     prompt_text = "\n".join(m.content for m in req.messages)

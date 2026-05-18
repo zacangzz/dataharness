@@ -25,9 +25,10 @@ class ScriptRuntime:
     async def stream(self, request):
         self.captured.append(request)
         stop = request.stop or []
+        sys_text = " ".join(m.content for m in request.messages if m.role == "system")
         if stop == ["</tool_call>"]:
             text = self.force_outputs.pop(0) if self.force_outputs else ""
-        elif stop == ["```"]:
+        elif "self-contained Python snippet" in sys_text:  # gen-2 (no stop sent)
             text = _FENCED
         else:
             text = "I will use the analysis_plan tool to outline the steps."

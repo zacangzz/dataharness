@@ -46,6 +46,11 @@ Last reviewed: 2026-05-17.
 - TUI compaction completion must refresh both transcript and chat sidebar
   resources. Rehydrating the conversation alone leaves sidebar message counts
   stale even when `metadata.json` was updated correctly.
+- TUI turn completion and successful resource commands must refresh sidebar
+  resources generically, not only update trace/conversation state. Chat message
+  counts change after persisted turns, and chat create/delete or file-affecting
+  commands should be reflected by `_refresh_sidebar_resources()` without each
+  sidebar section inventing its own persistence reads.
 - Compaction summaries should be DataHarness handoff checkpoints, not transcript
   digests. Keep the runtime compaction prompt canonical in
   `src/harness/prompts/compaction.md`, and keep `ChatCompactor` loading that file
@@ -430,3 +435,12 @@ Last reviewed: 2026-05-17.
   and `src/harness/doctor_runner.py` are deleted. The `src/harness/commands/`
   PACKAGE of real command modules still exists — do not confuse the deleted
   `commands.py` module with the `commands/` package.
+
+- Test fakes MUST honor `request.stop`. `tests/harness/test_agentic_turn.py:FakeRuntime`
+  ignored it and emitted scripted text verbatim, giving false confidence: gen-2's
+  `stop=["```"]` collided with the prompt-mandated opening ```` ```python ```` fence
+  and truncated every gen-2 generation to empty in production, while all tests passed.
+  A fake that doesn't model stop sequences cannot catch stop/prompt collisions.
+- Small local LLMs frequently emit Python dict literals (single quotes, True/False/None)
+  for tool calls instead of JSON. `runtime/tool_calls._match_and_parse` now falls back
+  to `ast.literal_eval` after the `json.loads` attempts.

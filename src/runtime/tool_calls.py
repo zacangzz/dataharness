@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import re
 from typing import Any
@@ -95,8 +96,20 @@ def _match_and_parse(text: str) -> dict[str, Any]:
     try:
         return json.loads(_escape_control_chars_in_strings(raw))
     except json.JSONDecodeError as exc:
-        snippet = raw[:200] + ("…" if len(raw) > 200 else "")
-        raise ToolCallParseError(f"invalid tool_call json: {exc} | raw={snippet!r}") from exc
+        json_exc = exc
+    # Small local LLMs frequently emit a Python dict literal (single-quoted
+    # strings, True/False/None) instead of JSON. ast.literal_eval parses those
+    # safely (literals only — no calls/names) and rejects anything else.
+    try:
+        value = ast.literal_eval(raw.strip())
+    except (ValueError, SyntaxError):
+        value = None
+    if isinstance(value, dict):
+        return value
+    snippet = raw[:200] + ("…" if len(raw) > 200 else "")
+    raise ToolCallParseError(
+        f"invalid tool_call json: {json_exc} | raw={snippet!r}"
+    ) from json_exc
 
 
 def parse_tool_call_block(text: str) -> ParsedToolCall:
@@ -108,9 +121,9 @@ def parse_tool_call_block(text: str) -> ParsedToolCall:
 def extract_fenced_code(text: str) -> list[str]:
     """Extract lines from the first ``` fenced block.
 
-    Tolerates a missing closing fence (gen-2 uses ``stop=["```"]`` so the
-    runtime consumes it). Drops the optional info/language line and trailing
-    blank lines. Returns ``[]`` when no fence is present.
+    Tolerates a missing closing fence (model may hit EOS / token cap mid
+    block). Drops the optional info/language line, anything after the close
+    fence, and trailing blank lines. Returns ``[]`` when no fence is present.
     """
     open_idx = text.find("```")
     if open_idx == -1:
