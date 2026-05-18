@@ -434,6 +434,7 @@ class DataHarnessApp(App[None]):
         self.query_one("#conversation", ConversationPane).finalize_assistant(event.text)
         self._trace.final_message()
         self._refresh_trace_widgets()
+        self.run_worker(self._refresh_sidebar_resources())
 
     def _handle_turn_failed(self, event) -> None:
         self._trace.failed(event.failure_summary, event.error_code)
@@ -442,6 +443,7 @@ class DataHarnessApp(App[None]):
         )
         self.query_one("#sidebar", SidebarPane).failure(event.failure_summary, event.error_code)
         self._refresh_trace_widgets()
+        self.run_worker(self._refresh_sidebar_resources())
 
     def _handle_turn_cancelled(self, event) -> None:
         self.query_one("#conversation", ConversationPane).finalize_assistant(
@@ -449,6 +451,7 @@ class DataHarnessApp(App[None]):
         )
         self._trace.cancelled(event.reason)
         self._refresh_trace_widgets()
+        self.run_worker(self._refresh_sidebar_resources())
 
     def _handle_command_started(self, event) -> None:
         self._trace.command_started(event.command)
@@ -477,11 +480,29 @@ class DataHarnessApp(App[None]):
                 self._refresh_trace_widgets()
                 self.run_worker(self.activate_chat(chat_id))
                 return
+        if (
+            event.command == "delete_chat"
+            and isinstance(event.result, dict)
+            and "error" not in event.result
+        ):
+            deleted = event.result.get("deleted")
+            deleted_chat_id = deleted.get("chat_id") if isinstance(deleted, dict) else None
+            if deleted_chat_id and deleted_chat_id == self._active_chat_id:
+                self._active_chat_id = None
+                try:
+                    self.query_one("#conversation", ConversationPane).clear()
+                except Exception:
+                    pass
+            self._refresh_trace_widgets()
+            self.run_worker(self._refresh_sidebar_resources())
+            return
         snapshot = event.result.get("snapshot") if isinstance(event.result, dict) else None
         if snapshot:
             self.apply_workspace_snapshot(snapshot)
         else:
             self._refresh_trace_widgets()
+            if not (isinstance(event.result, dict) and "error" in event.result):
+                self.run_worker(self._refresh_sidebar_resources())
 
     def _handle_doctor_finding(self, event) -> None:
         self.query_one("#sidebar", SidebarPane).append_doctor_finding(event.summary, event.severity)

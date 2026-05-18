@@ -18,8 +18,8 @@ def test_build_app_bundles_runtime_prompt_resources() -> None:
     script = Path("scripts/build_app.sh").read_text()
 
     assert "--add-data" in script
-    assert "src/app/agents/prompts:app/agents/prompts" in script
     assert "src/harness/prompts:harness/prompts" in script
+    assert "src/app/agents/prompts" not in script  # removed: L3 refactor moved persona prompts to harness/prompts
     assert "--collect-submodules observability" in script
 
 

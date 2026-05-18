@@ -3,7 +3,7 @@ An LLM-powered Data Analysis, Data Science, and Reporting App. It is completely 
 1. LLM Runtime - using llama.cpp python, it's the brain of the app
 2. Execution Worker - runs python code, it's the hands and legs of the app
 3. Harness - core that manges the LLM runtime, execution worker, and contains structure, orchestration, and deterministic logic, the body of the app
-4. Application Layer - this where the TUI is at, along with the 'agentic' function that directs app operations, the soul or personality of the app
+4. Application Layer - this where the TUI is at, is the front facing UI/UX that calls the Harness for all it's tasks
 Each Layer is completely separate and independent, it is it's own standalone layer. Each layer communicates with other layers to form a functioning whole app.
 
 ## Core Rules

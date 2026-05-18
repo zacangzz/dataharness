@@ -10,7 +10,7 @@ DataHarness is a local-first data analysis, data science, and reporting applicat
 
 The system is single-user and local-first. It uses one local LLM runtime, one controlled Python execution worker, one harness (a separable Harness Core plus harness services that own intent routing and built-in prompt profiles), and one application layer that is the Textual TUI plus the `AppSession` facade.
 
-The product goal is to make local data work reliable enough that important claims can be traced back to inspected source files, executed code, artifacts, fingerprints, validity state, and prompt mode context.
+The product goal is to make local data work reliable enough that important claims can be traced back to inspected source files, executed code, artifacts, fingerprints, validity state, and prompt-profile context.
 
 ## 2. Scope
 
@@ -25,7 +25,7 @@ The product goal is to make local data work reliable enough that important claim
 - Durable workspace state, memory, dataset knowledge, validity, doctor reports, and provenance.
 - Explicit user approval before code execution.
 - Harness-owned command surface for platform operations.
-- Agent modes for interaction, analysis, and knowledge capture.
+- Harness-owned prompt profiles for interaction, analysis, clarification, and knowledge capture.
 - Textual TUI with live streaming events, status snapshots, workspace controls, chat controls, file ingest, file mentions, Markdown conversation rendering, and sidebar navigation.
 - Artifact-backed analytical answers with provenance.
 - Local telemetry and human-readable logs.
@@ -34,12 +34,12 @@ The product goal is to make local data work reliable enough that important claim
 
 - Multi-user collaboration.
 - Cloud execution.
-- Parallel agent runtimes.
+- Parallel prompt-profile runtimes.
 - Concurrent analysis runs in one app process.
 - Autonomous harness self-modification.
 - Unconstrained plugin execution.
 - Hidden background maintenance that acts without user-visible status or reviewable records.
-- Shell integration, agent app store behavior, ACP provider integration, multi-agent concurrent execution, and full settings systems.
+- Broad shell integration, third-party agent app store behavior, ACP provider integration, multi-agent concurrent execution, and full settings systems.
 - HTTP-client domain behavior, request collections, environment management, and copying unrelated application source.
 
 ## 3. Core Principles
@@ -238,6 +238,7 @@ Layer 1 may not own:
 - provenance
 - UI state
 - routing policy
+- tool registry ownership or tool dispatch
 
 ## 6. Layer 2: Worker
 
@@ -329,21 +330,31 @@ Layer 2 reports these facts. Layer 3 decides how they affect the run.
 
 Layer 3 turns runtime plus execution into a real analysis system. It is the source of operational truth and the first fully meaningful product layer.
 
-Layer 3 also owns intent routing and prompt-profile selection. The interaction/data-analyst/knowledge behaviors are prompt profiles resolved inside the harness, not an app sublayer: a deterministic intent router (`ModeRouter`) picks the mode and a prompt-profile registry (`PromptProfileRegistry`) assembles the prompt package. There is no Layer 4b agent sublayer; Layer 4 is the TUI plus the `AppSession` facade.
+Layer 3 also owns intent routing and prompt-profile selection. The interaction, analyst, clarification, and knowledge behaviors are prompt profiles resolved inside the harness, not an app sublayer: a deterministic intent router (`ModeRouter`) picks the profile and a prompt-profile registry (`PromptProfileRegistry`) assembles the prompt package. Layer 4 is the TUI plus the `AppSession` facade.
 
 Layer 3 is structured as:
 
 - a separable **Harness Core (kernel)** under `src/harness/core/` — the state machine, command registry, approval gate, plan validity, analysis flow, persistence/db, app store, paths, fingerprints, kernel workspace store, and prompt registry. The kernel is the layer-pure heart that does not depend on harness services.
 - **harness services** under `src/harness/services/` — mode routing, prompt profiles, chat, context, knowledge, knowledge intents, analysis, doctor, repair, provenance, workspace, and workspace files.
+- model-callable **tools** under `src/harness/tools/` — the only operations the model may emit through parsed `<tool_call>` blocks.
+- user/app-callable **commands** under `src/harness/commands/` — the operations Layer 4 may expose through slash commands, command palette results, dedicated controls, or contextual actions.
 - **shared contracts** at `src/harness/` root — `control`, `events`, `exceptions`, `status`, and the `orchestrator` that composes the kernel and services.
 
-The harness exposes three surfaces: model-callable **Tools**, user/app-callable **Commands**, and internal **Services**. Prompt profiles and the intent router are Services; they are never directly model- or UI-callable.
+The harness exposes three surface categories:
+
+- **Tools** are model-callable operations emitted through Layer 1 parsing and validated/dispatched by Layer 3.
+- **Commands** are user/app-callable operations invoked from Layer 4 and validated/dispatched by Layer 3.
+- **Services** are internal domain logic used by tools, commands, and orchestrator workflows.
+
+No exposed harness operation may be surface-less. If the model can call it, it must be a registered tool and appear in the prompt tool catalog. If the user or app can call it, it must be a registered command and have at least one Layer 4 reachability path. If neither is true, it is an internal service/helper and must not be documented as a tool or command.
+
+Prompt profiles and the intent router are services. They are never directly model- or UI-callable.
 
 ### 7.2 Required Capabilities
 
 - Orchestrator and control loop.
 - Intent routing and prompt-profile selection.
-- Active workspace, chat, run, and mode state.
+- Active workspace, chat, run, and prompt-profile state.
 - Chat lifecycle and persistence.
 - Workspace lifecycle and ingest coordination.
 - Context rebuild and compaction policy.
@@ -351,7 +362,8 @@ The harness exposes three surfaces: model-callable **Tools**, user/app-callable 
 - Plan and step management.
 - Explicit approval gates.
 - Worker dispatch and cancellation.
-- Direct command registry.
+- Model-callable tool registry and dispatch enforcement.
+- Direct command registry and command-family dispatch.
 - Status snapshots and status watcher.
 - Typed harness events.
 - Durable state and memory indexing.
@@ -406,11 +418,11 @@ Higher layers may request work or decisions, but the harness validates and recor
 A user turn follows this logic:
 
 1. Layer 4 opens a turn and sends user text through `AppSession`.
-2. The harness routes the text to a prompt profile (`ModeRouter`) and loads the prompt package (`PromptProfileRegistry`), preserving the prior non-interaction profile on ambiguous input and persisting the chosen mode on the run state.
+2. The harness routes the text to a prompt profile (`ModeRouter`) and loads the prompt package (`PromptProfileRegistry`), preserving the prior non-interaction profile on ambiguous input and persisting the chosen profile on the run state.
 3. The harness appends the user message to the active chat.
 4. The harness reloads fresh durable workspace context.
-5. The harness validates or records the active mode.
-6. The harness assembles a runtime request from mode prompt, durable context, chat summary, recent turns, and current user text.
+5. The harness validates or records the active prompt profile.
+6. The harness assembles a runtime request from profile prompt, durable context, chat summary, recent turns, and current user text.
 7. The harness asks Layer 1 for token pressure and compacts chat if required.
 8. The harness streams runtime events and maps them to `HarnessEvent` values.
 9. If execution is required, the harness creates or validates a plan and step contract, pauses for explicit approval, then dispatches Layer 2.
@@ -437,7 +449,7 @@ Non-execution maintenance decisions may use a 10-second timeout path only when:
 Chats are Layer 3 records. Every chat belongs to exactly one workspace and is stored under:
 
 ```text
-<app_root>/chats/<workspace_id>/<chat_id>/
+<app_root>/workspaces/<workspace_id>/chats/<chat_id>/
 ```
 
 Chat directory layout:
@@ -457,7 +469,7 @@ Chat messages include:
 - text
 - timestamp
 - turn id
-- active mode
+- active prompt profile
 - token estimate
 
 The harness appends the current user message before prompt assembly and appends the assistant final message after successful completion. Failed or cancelled turns may record a terminal marker but must not invent an assistant answer.
@@ -468,7 +480,7 @@ Resuming a chat loads persisted messages into Layer 3 prompt history. Deleting a
 
 Layer 3 assembles runtime messages in this order:
 
-1. active mode/system prompt
+1. active prompt profile's system prompt
 2. fresh durable workspace context
 3. active chat summary, if present
 4. recent active chat turns for the active workspace
@@ -488,7 +500,7 @@ Layer 3 calls `runtime.token_pressure(request)` for authoritative pressure and d
 
 ### 7.9 Chat Compaction
 
-`/compact` and `compact_chat_history(...)` compact chat history only. Compaction writes to `<app_root>/chats`, not workspace `memory/`.
+`/compact` and `compact_chat_history(...)` compact chat history only. Compaction writes to workspace-scoped chat storage, not workspace `memory/`.
 
 Compaction emits:
 
@@ -515,10 +527,9 @@ Recommended app root shape:
 +-- harness/
 |   +-- telemetry/
 |   +-- logs/
-+-- chats/
-|   +-- <workspace_id>/
 +-- workspaces/
     +-- <workspace_id>/
+        +-- chats/
         +-- data/
         +-- artifacts/
         |   +-- tmp/
@@ -626,7 +637,7 @@ No prior conclusion is silently overwritten.
 
 ### 7.16 Doctor And Review
 
-Doctor is a Layer 3 platform function, callable directly from the TUI, harness control logic, or agent flows.
+Doctor is a Layer 3 platform function, callable directly from the TUI, harness control logic, or prompt-profile workflows.
 
 Doctor responsibilities:
 
@@ -645,7 +656,12 @@ Doctor emits:
 - `DoctorFinding`
 - `DoctorActionProposed`
 - `DoctorReportReady`
+- `DoctorNarrationReady`, when LLM narration is available or a deterministic fallback is produced
+- `DoctorApprovalRequested`, when user review is required for tmp actions
+- `DoctorActionsApplied`, after approved doctor actions are applied
 - `CommandCompleted(command="doctor")`
+
+Doctor narration is owned by Layer 3. The doctor service may use the runtime to produce human-readable narration over a structured report, but Layer 4 only maps and renders the resulting events. `AppSession` must not import `runtime.*` or synthesize doctor narration locally.
 
 Tmp review precedes cleanup. Tmp actions may be:
 
@@ -676,7 +692,7 @@ The harness provides:
 - freshness checks before saved-function reuse
 - bounded synthesis and reconciliation when deterministic storage rules are insufficient
 
-Only `KnowledgeManager` may write under `memory/`. App and agent code must use harness services rather than writing memory files directly.
+Only `KnowledgeManager` may write under `memory/`. App code, tools, commands, prompt profiles, and services must use harness-owned knowledge APIs rather than writing memory files directly.
 
 ### 7.18 Provenance
 
@@ -688,7 +704,7 @@ Every important claim must be traceable to:
 - artifacts
 - plan and step lineage
 - validity state
-- active prompt mode
+- active prompt profile
 - prompt template identity and version where relevant
 
 The harness owns provenance rules. Layer 4 renders provenance; it does not decide it.
@@ -697,29 +713,19 @@ The harness owns provenance rules. Layer 4 renders provenance; it does not decid
 
 Layer 3 exposes user-callable harness functions through a typed command registry. Layer 4 discovers command names, descriptions, arguments, availability, disabled reasons, affected resources, expected events, and examples from Layer 3.
 
-Command coverage includes:
+Command coverage is grouped by family:
 
-- `doctor`
-- `compact`
-- `cancel_run`
-- `retry_step`
-- `revise_goal`
-- `stop_after_current_step`
-- `rerun_step`
-- `challenge_conclusion`
-- `mark_result_trusted`
-- `mark_result_invalidated`
-- `inspect_artifact`
-- `memory_review`
-- `provenance_inspect`
-- `switch_workspace`
-- `workspace_status`
-- `workspace_inventory`
-- `validity_inspect`
-- `help`
-- chat create/list/view/resume/delete commands
+- app commands: `help`; local Layer 4 `exit` / `quit` handling where appropriate
+- chat commands: `create_chat`, `list_chats`, `view_chat`, `resume_chat`, `delete_chat`, `compact`
+- workspace commands: `list_workspaces`, `create_workspace`, `rename_workspace`, `delete_workspace`, `switch_workspace`, `workspace_status`, `workspace_inventory`
+- doctor commands: `doctor` plus doctor action review/application paths surfaced through Layer 4 approval UI
+- run and review commands: `cancel_run`, `stop_after_current_step`, `retry_step`, `rerun_step`, `revise_goal`, `mark_result_trusted`, `mark_result_invalidated`, `challenge_conclusion`
+- memory commands: `memory_review` plus memory proposal approval/rejection/application commands when present
+- provenance and validity commands: `provenance_inspect`, `validity_inspect`, and artifact inspection commands when available
 
 If a command is listed as available, invoking it must perform real harness behavior and emit typed events. If behavior is incomplete, the command must be unavailable with a clear `disabled_reason`.
+
+Commands are never model-callable by implication. Compatibility command names such as `list_files`, `inspect_file`, `read_file`, `plan_analysis`, `request_execution`, and `recall_knowledge` may remain user/app-facing during migration, but command compatibility does not make those names valid tool calls.
 
 Slash command grammar is positional only:
 
@@ -728,6 +734,84 @@ Slash command grammar is positional only:
 ```
 
 Tokens containing spaces must be double-quoted. Named flags are out of scope.
+
+### 7.20 Tool Surface
+
+Layer 3 exposes model-callable operations through a typed tool registry. Layer 1 only streams model output and parses `<tool_call>` blocks. Layer 3 validates tool names and arguments, dispatches only registered tools, and never falls back to command dispatch for model-emitted names.
+
+Tool descriptors must support deterministic validation before handler execution:
+
+- required-argument checks
+- type coercion
+- `allowed_values` checks for enum-like arguments
+- regex checks for bounded string and path formats
+- neutral tool-call context containing only workspace id, chat id, run id, and pending approval/clarification flags
+
+Tool handlers must not depend on command-specific context types. Handlers and services still own semantic checks such as workspace existence, file availability, artifact existence, and approval state.
+
+The core model-facing tool families are:
+
+- file tools
+- control tools
+- analysis tools
+- knowledge tools
+
+`file_read` is the canonical read-only file tool. It replaces model-facing use of `list_files`, `inspect_file`, and `read_file`:
+
+```json
+{"name":"file_read","arguments":{"operation":"list","path":"data/"}}
+{"name":"file_read","arguments":{"operation":"inspect","path":"data/sales.csv"}}
+{"name":"file_read","arguments":{"operation":"content","path":"data/notes.md","max_bytes":8192}}
+```
+
+`file_write` is separate from `file_read` because writes have a different risk level and approval model. `shell_command` is separate from both file tools and must remain tightly allowlisted and read-only unless a future spec broadens it. `file_write` and `shell_command` are target tool definitions and must not be registered until their approval and allowlist behavior are implemented and tested.
+
+Control tools represent model-emitted flow-control choices:
+
+- `answer_directly`
+- `handoff_to_analyst`
+- `handoff_to_knowledge`
+- `request_clarification`
+- `respond_to_user`
+
+Control tools are registered model-callable tools because they use the `<tool_call>` path. They are not commands because the user does not invoke them through Layer 4 command surfaces.
+
+Analysis tools include:
+
+- `analysis_plan`
+- `analysis_request_execution`
+- `analysis_inspect_artifact`
+- `analysis_inspect_provenance`
+- `analysis_inspect_validity`
+
+`analysis_plan` is the model-facing successor to `plan_analysis`. It creates a validated analysis plan and emits `ApprovalRequired`. `analysis_request_execution` is the model-facing successor to `request_execution`. Layer 2 execution remains approval-gated: the model can propose analysis work, but it cannot directly execute arbitrary code.
+
+Knowledge tools include:
+
+- `knowledge_recall`
+- `knowledge_propose_update`
+
+Knowledge tools expose model-facing recall or proposal operations. They may propose notes, preferences, gaps, or reusable function candidates. Durable memory writes still go through `KnowledgeManager` and any required review path.
+
+Prompt packages must advertise tool names from the tool registry, not command descriptors. A prompt catalog entry is invalid if the named tool is not registered.
+
+### 7.21 Service Surface
+
+Services are internal implementation units. They are not directly exposed to the model or TUI and must not appear directly in prompt catalogs, slash command catalogs, command palette results, or TUI controls unless wrapped by a tool or command descriptor.
+
+Target service areas:
+
+- chat service: chat records, compaction, runtime request building
+- workspace service: workspace listing, activation, ingest, inventory
+- doctor service: diagnostics, tmp review, source checks, proposed actions, narration, and approval emission
+- knowledge service: preferences, notes, gaps, function candidates, memory proposals
+- analysis service: plan validation, step contracts, approval state, artifact/provenance access
+- context service: durable workspace context, file schema snapshots, token-budgeted context assembly
+- status service: authoritative workspace/run/chat status snapshots
+- mode-router service: prompt-profile selection from user text and turn state
+- prompt-profile service: persona package assembly and allowed-tool catalog construction
+
+A service method can be called by a tool, command, or orchestrator workflow. Service code owns reusable domain behavior; exposed surfaces own validation and reachability.
 
 ## 8. Harness Events And Status
 
@@ -754,7 +838,7 @@ Required event families:
 - runtime stream: `RuntimeDelta`
 - plan/approval: `PlanReady`, `ApprovalRequired`, `ApprovalResolved`
 - worker: `StepTaskSubmitted`, `StepTaskStatusChanged`, `StepCompleted`, `ArtifactsReady`
-- doctor: `DoctorStarted`, `DoctorFinding`, `DoctorActionProposed`, `DoctorReportReady`
+- doctor: `DoctorStarted`, `DoctorFinding`, `DoctorActionProposed`, `DoctorReportReady`, `DoctorNarrationReady`, `DoctorApprovalRequested`, `DoctorActionsApplied`
 
 ### 8.2 Status Snapshot
 
@@ -763,7 +847,7 @@ Required event families:
 - workspace id
 - chat id and title
 - workspace health
-- active mode
+- active prompt profile
 - run id and run state
 - runtime status
 - execution task counts
@@ -792,7 +876,7 @@ Subscribers must tolerate duplicate snapshots.
 
 ### 9.1 Purpose
 
-Layer 4 turns the harness into the product the user experiences. It is the application layer built on top of Layer 3. Layer 4 is the Textual TUI plus the `AppSession` facade that connects it to the harness. There is no agent-mode sublayer: prompt-profile identity, intent routing, and prompt selection are Layer 3 concerns (see §7.1).
+Layer 4 turns the harness into the product the user experiences. It is the application layer built on top of Layer 3. Layer 4 is the Textual TUI plus the `AppSession` facade that connects it to the harness. Prompt-profile identity, intent routing, and prompt selection are Layer 3 concerns (see §7.1).
 
 Layer 4 owns:
 
@@ -814,7 +898,7 @@ Layer 4 is organized as:
 Layer 4a TUI --> AppSession --> Layer 3 Orchestrator
 ```
 
-`AppSession` is the boundary object. It is Layer 4 code, but it is not the TUI and it is not an agent. It is a thin application facade that forwards TUI input to the harness, applies app telemetry and concurrency checks, and maps harness events to app events. It does not route intents or select prompts; those are Layer 3 concerns.
+`AppSession` is the boundary object. It is Layer 4 code, but it is not the TUI and it is not a routing layer. It is a thin application facade that forwards TUI input to the harness, applies app telemetry and concurrency checks, and maps harness events to app events. It does not route intents or select prompts; those are Layer 3 concerns.
 
 This distinction keeps responsibilities clear:
 
@@ -850,11 +934,12 @@ Prompt profiles:
 
 - `interaction`
 - `data analyst` (`analyst`)
+- `clarification`
 - `knowledge`
 
-Profiles are prompt packages, not concurrent runtimes. The interaction profile handles front-door conversation and routes analytical and knowledge intents. The data-analyst profile turns analytical intent into plans, execution requests, artifact-backed answers, and gap records. The knowledge profile turns user teaching and reusable logic into harness-owned memory proposals.
+Profiles are prompt packages, not concurrent runtimes. The interaction profile handles front-door conversation and can hand off analytical or knowledge intents through registered control tools. The data-analyst profile turns analytical intent into plans, execution requests, artifact-backed answers, and gap records. The clarification profile handles missing intent or missing execution details. The knowledge profile turns user teaching and reusable logic into harness-owned memory proposals.
 
-`ModeRouter` selects the profile per turn from the user text; on ambiguous input the harness preserves the prior non-interaction profile (continuity for follow-ups and clarification resume). The chosen mode is written back onto the live run state. `PromptProfileRegistry` assembles the prompt package (system + persona + tool catalog + response format) on demand.
+`ModeRouter` selects the profile per turn from the user text; on ambiguous input the harness preserves the prior non-interaction profile (continuity for follow-ups and clarification resume). The chosen profile is written back onto the live run state. `PromptProfileRegistry` assembles the prompt package (system + persona + tool catalog + response format) on demand.
 
 ### 9.5 Prompt Ownership
 
@@ -877,7 +962,7 @@ Layer 4a answers questions such as:
 - what commands and file mentions are available now?
 - what did the system just do, and what evidence supports the answer?
 
-Layer 4a owns presentation and input mechanics. It does not own agent prompts, routing policy, durable chat history, workspace state, command truth, execution decisions, or analytical validity.
+Layer 4a owns presentation and input mechanics. It does not own prompt profiles, routing policy, durable chat history, workspace state, command truth, execution decisions, or analytical validity.
 
 The Textual UI is chat-first but not chat-only. It must expose distinct surfaces for:
 
@@ -931,7 +1016,7 @@ Required behavior:
 - completions without shifting main conversation layout
 - mouse cursor placement, paste, selection, and common editor keys
 - prompt focus retention after errors and completed turns
-- concise status for active mode, run state, runtime status, and hint state
+- concise status for active prompt profile, run state, runtime status, and hint state
 - context-sensitive argument candidates when data exists: workspace ids, chat ids, run ids, step ids, and artifact paths
 - selected commands with required arguments prefill the prompt with slash command text and argument placeholders instead of executing prematurely
 
@@ -1150,7 +1235,7 @@ The user uploads or ingests files. Layer 4 collects file choices and calls `AppS
 
 ### 10.2 First Analysis
 
-The user asks an analytical question. The interaction agent routes to analyst mode. The harness builds context, creates a plan if needed, pauses for execution approval, runs approved code in the worker, inspects results, records provenance and validity, and returns an evidence-backed answer.
+The user asks an analytical question. The harness routes the turn to the analyst profile. It builds context, creates a plan if needed, pauses for execution approval, runs approved code in the worker, inspects results, records provenance and validity, and returns an evidence-backed answer.
 
 ### 10.3 Follow-Up Analysis
 
@@ -1158,7 +1243,7 @@ The harness includes active chat history, chat summary, durable workspace contex
 
 ### 10.4 Clarification
 
-When intent or semantics are insufficient, the interaction agent requests clarification. The harness records clarification state. The TUI renders a clarification modal or prompt. The user's answer resumes the harness flow from that decision point.
+When intent or semantics are insufficient, the harness requests clarification and records clarification state. The TUI renders a clarification modal or prompt. The user's answer resumes the harness flow from that decision point, preserving the active prompt profile when the answer is ambiguous.
 
 ### 10.5 Drift And Doctor
 
@@ -1277,6 +1362,14 @@ Layer 2 tests verify:
 
 Layer 3 tests verify:
 
+- tool registry lists only model-callable tools
+- command registry lists only user/app-callable commands
+- model tool calls cannot dispatch command-only names such as `doctor`, `compact`, or `delete_workspace`
+- every model-emitted control intent using `<tool_call>` is registered as a tool or explicitly documented outside harness dispatch
+- tool descriptor validation covers required fields, type coercion, allowed values, and regex constraints
+- `file_read` covers list, inspect, and content operations
+- prompt packages advertise tool names from the tool registry, not command descriptors
+- old command compatibility remains only where intentionally preserved
 - event order for non-execution turns
 - runtime deltas stream as harness events
 - active chat history included in subsequent prompts
@@ -1289,7 +1382,9 @@ Layer 3 tests verify:
 - workspace deletion cascades chats
 - workspace switch blocking and force behavior
 - command descriptors and disabled reasons
+- command-family reachability through Layer 4 command catalog behavior
 - `/doctor` verbose event flow
+- doctor narration and approval events originate from Layer 3 and preserve Layer 4 payload shapes
 - `/help` behavior
 - approval resume emits worker task events
 - cancellation calls worker cancel
@@ -1324,6 +1419,7 @@ Layer 4 tests verify:
 - TCSS resources are included in packaging and fallback styling lets the app start if loading fails
 - no sync app/session methods are used
 - no direct TUI imports of `runtime.*`
+- no `src/app` imports of `app.agents` or `runtime.*`, and no Layer 4 routing or prompt-selection logic
 
 Minimum verification commands for TUI-focused work:
 
@@ -1341,6 +1437,10 @@ DataHarness is not correct unless all of these are true:
 - no saved knowledge is reused after material source change without validity handling
 - no doctor outcome silently overwrites prior state
 - intent routing and prompt-profile selection are Layer 3; no app code routes or selects prompts, and no prompt profile bypasses harness ownership boundaries
+- no `src/app/agents/` package exists; prompt profiles are Layer 3 services
+- model-callable operations are registered tools, user/app-callable operations are registered commands, and internal domain logic remains services
+- model tool dispatch never falls back to command dispatch
+- prompt tool catalogs are generated from the tool registry
 - no UI hides critical failures or uncertainty
 - no retry loop runs invisibly without bounded control
 - no durable memory update occurs without a reviewable path
@@ -1351,11 +1451,12 @@ DataHarness is not correct unless all of these are true:
 - one active run, chat, workspace, runtime stream, and worker task invariant is enforced
 - runtime cancellation is visible within one token boundary
 - worker cancellation returns a cancelled envelope
-- chat history is workspace-scoped and persisted under `<app_root>/chats`
+- chat history is workspace-scoped and persisted under `<app_root>/workspaces/<workspace_id>/chats`
 - compaction writes only to chat storage, not workspace memory
 - status bar uses Layer 3 snapshots only
 - every available command is callable through Layer 4
 - `/doctor` is a real Layer 3 flow
+- doctor narration and doctor approval events originate in Layer 3 and are only mapped/rendered by Layer 4
 - TUI controls either call real Layer 3 behavior or show unavailable state
 - packaging includes required assets and dynamic modules
 - CODEMAP is updated whenever code relationship structure changes
@@ -1369,7 +1470,7 @@ Implement in layer order when changing behavior:
 3. Layer 3 async orchestration, chat, commands, doctor, status, and persistence.
 4. Layer 4 AppSession event mapping.
 5. Layer 4 TUI surfaces.
-6. Agent prompt refinements.
+6. Prompt-profile refinements.
 7. Packaging and end-to-end verification.
 
 For TUI work, prefer staged vertical slices:

@@ -22,7 +22,6 @@ uv run --with pyinstaller pyinstaller \
   --hidden-import runtime.config \
   --hidden-import runtime.llama_cpp_runtime \
   --hidden-import worker.sandbox_bootstrap \
-  --add-data "${PROJECT_ROOT}/src/app/agents/prompts:app/agents/prompts" \
   --add-data "${PROJECT_ROOT}/src/app/tui/dataharness.tcss:app/tui" \
   --add-data "${PROJECT_ROOT}/src/harness/prompts:harness/prompts" \
   --collect-submodules app \

@@ -41,8 +41,8 @@ def build_app(
         tui_module = importlib.import_module("app.tui.app")
         session_module = importlib.import_module("app.session")
         control_module = importlib.import_module("harness.control")
-        factory_module = importlib.import_module("harness.factory")
-        workspace_module = importlib.import_module("harness.workspace")
+        factory_module = importlib.import_module("harness.core.factory")
+        workspace_module = importlib.import_module("harness.core.workspace")
     except Exception as exc:
         telemetry.emit_error(Layer.BOOTSTRAP, EventKind.BOOTSTRAP_IMPORT_ERROR, phase="import", exc=exc)
         raise

@@ -147,6 +147,14 @@ class ConversationPane(VerticalScroll):
                 pass
             self._streaming_block = None
 
+    def clear(self) -> None:
+        try:
+            self.remove_children()
+        except Exception:
+            pass
+        self._blocks = []
+        self._streaming_block = None
+
     def text_buffer(self) -> str:
         parts: list[str] = []
         for block in self._blocks:

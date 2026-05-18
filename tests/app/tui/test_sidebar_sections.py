@@ -1,9 +1,10 @@
 import pytest
+from types import SimpleNamespace
 from textual.app import App, ComposeResult
 
 from app.tui.app import DataHarnessApp
 from app.tui.sidebar import SidebarState
-from app.tui.widgets import SidebarPane
+from app.tui.widgets import ConversationPane, SidebarPane
 
 
 def test_sidebar_state_renders_stable_sections():
@@ -145,3 +146,50 @@ async def test_app_refreshes_sidebar_files_after_workspace_snapshot(tmp_path):
 
         sidebar = app.query_one("#sidebar", SidebarPane)
         assert "data/sales.csv" in sidebar.text_buffer()
+
+
+@pytest.mark.asyncio
+async def test_final_message_refreshes_sidebar_resources(tmp_path):
+    app = DataHarnessApp(workspace_dir=tmp_path / "workspaces" / "w_0001")
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        scheduled = []
+
+        def fake_run_worker(coro):
+            scheduled.append(coro)
+
+        app.run_worker = fake_run_worker
+        app._handle_final_message(SimpleNamespace(text="answer"))
+
+        try:
+            assert [coro.cr_code.co_name for coro in scheduled] == [
+                "_refresh_sidebar_resources",
+            ]
+        finally:
+            for coro in scheduled:
+                coro.close()
+
+
+@pytest.mark.asyncio
+async def test_delete_chat_command_refreshes_sidebar_and_clears_deleted_active_chat(tmp_path):
+    workspace_dir = tmp_path / "workspaces" / "w_0001"
+    app = DataHarnessApp(workspace_dir=workspace_dir)
+
+    async with app.run_test() as pilot:
+        await app._session.create_workspace("w_0001")
+        deleted = await app._session.create_chat("w_0001", title="delete me")
+        kept = await app._session.create_chat("w_0001", title="keep me")
+        app._active_chat_id = deleted.chat_id
+        app.query_one("#conversation", ConversationPane).append_user("stale deleted chat")
+        await app._refresh_sidebar_resources()
+
+        await app._stream_command("delete_chat", {"chat_id": deleted.chat_id})
+        await pilot.pause()
+        await pilot.pause()
+
+        sidebar_text = app.query_one("#sidebar", SidebarPane).text_buffer()
+        assert "delete me" not in sidebar_text
+        assert "keep me" in sidebar_text
+        assert app.active_chat_id is None
+        assert app.query_one("#conversation", ConversationPane).text_buffer() == ""

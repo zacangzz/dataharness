@@ -31,8 +31,7 @@ class ModeRouter:
         self.llm_classifier = llm_classifier
         self._classifier_cache: dict[str, str] = {}
 
-    analysis_terms = {
-        # original
+    analysis_terms = frozenset({
         "analyze", "analysis", "compare", "calculate", "compute",
         "chart", "plot", "correlation", "regression", "forecast", "summary",
         # aggregations / counts
@@ -42,19 +41,18 @@ class ModeRouter:
         "group", "filter", "top", "bottom", "distinct", "unique", "aggregate",
         "rank", "percent", "percentage", "ratio", "trend", "distribution",
         "histogram",
-    }
-    transformation_terms = {
-        "add", "derive", "derived", "transform", "transformed", "normalize",
-        "normalized", "encode", "bucket", "map", "join", "merge", "flag",
-        "classify", "column", "columns", "field", "fields", "lookup", "enrich",
-        "one", "hot", "moving", "rolling", "lag", "lead", "cumulative",
-    }
+    })
     rule_language_terms = frozenset({
         "derive", "derived", "transform", "transformed", "normalize", "normalized",
         "encode", "bucket", "map", "join", "merge", "flag", "classify", "lookup",
         "enrich", "moving", "rolling", "lag", "lead", "cumulative",
     })
     column_language_terms = frozenset({"column", "columns", "field", "fields"})
+    # Gate set = rule ∪ column signals plus standalone tokens; derived so the
+    # subsets stay the single source of truth and cannot drift.
+    transformation_terms = rule_language_terms | column_language_terms | frozenset(
+        {"add", "one", "hot"}
+    )
     workspace_reference_patterns = (
         ".csv", ".tsv", ".parquet", ".xlsx", ".xls", "data/", "@data/",
     )
@@ -62,10 +60,10 @@ class ModeRouter:
         "how many", "how much", "number of", "breakdown of", "rate of",
         "share of", "what percent", "what percentage",
     )
-    knowledge_terms = {
+    knowledge_terms = frozenset({
         "remember", "save", "note", "preference", "definition",
         "means", "teach", "metric",
-    }
+    })
 
     def route(self, user_text: str) -> ProfileDecision:
         normalized = user_text.lower()
